@@ -281,11 +281,34 @@ class Channel(Gtk.Box):
                 self.default_btn.add_css_class("default-device")
             else:
                 self.default_btn.remove_css_class("default-device")
-            self.activity.set_text("Em uso" if item["active"] else "")
+            owner = item.get("direct_owner")
+            self.activity.set_text(owner or ("Em uso" if item["active"] else ""))
+            self.activity.set_tooltip_text(f"Captura direta por {owner}" if owner else "Aplicativos usando este dispositivo")
             self.ports.update([(p["name"], p["title"]) for p in item["ports"]], item["port"])
             self.ports.set_visible(bool(item["ports"]))
             self.more.set_sensitive(item["channels"] == 2 or bool(item["ports"]))
         self.updating = False
+
+
+class MissingMicrophone(Gtk.Box):
+    def __init__(self, window, item):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.add_css_class("channel")
+        self.device = True
+        self.volume_timer = None
+        self.meter = None
+        self.item = item
+        icon = Gtk.Image.new_from_icon_name("audio-input-microphone-symbolic")
+        icon.set_pixel_size(16)
+        self.append(icon)
+        self.title = label(item["title"], "channel-name", True)
+        self.append(self.title)
+        self.append(label("Não publicado no sistema de áudio", "small muted"))
+        self.append(button("Ativar", lambda: window.engine.command("microphone", "card:" + self.item["name"])))
+
+    def update(self, item, state):
+        self.item = item
+        self.title.set_text(item["title"])
 
 
 class Window(Gtk.ApplicationWindow):
@@ -333,7 +356,14 @@ class Window(Gtk.ApplicationWindow):
         self.body = box(True, 6)
         self.scroll.set_child(self.body)
         root.append(self.scroll)
-        self.body.append(label("DISPOSITIVOS", "section-label"))
+        devices_heading = box(spacing=8)
+        devices_heading.append(label("DISPOSITIVOS", "section-label", True))
+        devices_heading.append(label("Microfone padrão", "small muted"))
+        self.microphone = Choice(lambda name: self.engine.command("microphone", name), "Escolher o microfone padrão")
+        self.microphone.set_hexpand(False)
+        self.microphone.set_size_request(200, -1)
+        devices_heading.append(self.microphone)
+        self.body.append(devices_heading)
         self.devices = box(True, 0, "channel-list")
         self.body.append(self.devices)
         heading = box(spacing=8)
@@ -440,7 +470,8 @@ class Window(Gtk.ApplicationWindow):
         self.max_volume = 150 if state["boost"] else 100
         if self.settings_window:
             self.boost_check.set_active(state["boost"])
-        items = [item for kind in ("sink", "source", "playback", "recording") for item in state[kind]]
+        self.microphone.update([(s["name"], short_device(s["title"])) for s in state["source"]] + [("card:" + s["name"], short_device(s["title"]) + " · ativar") for s in state["missing_sources"]], state["defaults"]["source"])
+        items = state["sink"] + state["source"] + state["missing_sources"] + state["playback"] + state["recording"]
         keys = {item["key"] for item in items}
         structure_changed = keys != set(self.channels)
         for key in list(self.channels):
@@ -451,7 +482,7 @@ class Window(Gtk.ApplicationWindow):
                 channel.get_parent().remove(channel)
         for item in items:
             if item["key"] not in self.channels:
-                channel = Channel(self, item)
+                channel = MissingMicrophone(self, item) if item["kind"] == "missing" else Channel(self, item)
                 self.channels[item["key"]] = channel
                 (self.devices if channel.device else self.apps).append(channel)
             else:
@@ -517,7 +548,7 @@ class Window(Gtk.ApplicationWindow):
     def tick(self):
         if self.is_visible():
             for channel in self.channels.values():
-                if channel.get_mapped():
+                if channel.get_mapped() and channel.meter:
                     channel.meter.queue_draw()
         return True
 

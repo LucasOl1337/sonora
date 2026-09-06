@@ -30,6 +30,7 @@ def channel():
 
 
 def start():
+    assert {s["name"] for s in app.window.state["source"]} <= set(app.window.microphone.values)
     adjustment = app.window.scroll.get_vadjustment()
     assert adjustment.get_upper() <= adjustment.get_page_size() + 1, (adjustment.get_upper(), adjustment.get_page_size())
     assert all(w.get_height() <= 48 for w in app.window.channels.values())

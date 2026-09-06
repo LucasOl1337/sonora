@@ -37,10 +37,54 @@ def client_properties(props):
         folder = Path(f"/proc/{parent}/cwd").resolve()
         command = Path(f"/proc/{parent}/cmdline").read_bytes().split(b"\0")
         if folder.name.lower() == "sussurro" and any(Path(arg.decode()).name == "app.py" for arg in command if arg):
-            return {**props, "application.name": "Sussurro", "application.id": "local.sussurro"}
+            return {**props, "application.name": "Sussurro · gestos do X9", "application.id": "local.sussurro.gestures"}
     except (OSError, ValueError, StopIteration):
         pass
     return props
+
+
+def missing_microphones(cards, sources):
+    published = {source.get("card") for source in sources}
+    missing = []
+    for card in cards:
+        if card.index in published:
+            continue
+        profiles = [p for p in card.profile_list if p.available and p.n_sources and "input:" in p.name]
+        if not profiles:
+            continue
+        outputs = getattr(card.profile_active, "n_sinks", 0)
+        profile = max(profiles, key=lambda p: (p.n_sinks >= outputs, p.priority))
+        missing.append({"key": "missing:" + card.name, "kind": "missing", "name": card.name,
+                        "title": card.proplist.get("device.description", card.name),
+                        "index": card.index, "profile": profile.name,
+                        "alsa_card": card.proplist.get("api.alsa.card")})
+    return missing
+
+
+def capture_pid(status):
+    fields = {key.strip(): value.strip() for key, value in (line.split(":", 1) for line in status.splitlines() if ":" in line)}
+    pid = fields.get("owner_pid", "")
+    return pid if fields.get("state") == "RUNNING" and pid.isdigit() else None
+
+
+def direct_capture_owner(alsa_card):
+    if alsa_card is None or not str(alsa_card).isdigit():
+        return None
+    for status in Path(f"/proc/asound/card{alsa_card}").glob("pcm*c/sub*/status"):
+        try:
+            pid = capture_pid(status.read_text())
+            if pid is None:
+                continue
+            process = Path(f"/proc/{pid}")
+            name = (process / "comm").read_text().strip()
+            if name.startswith("pipewire"):
+                continue
+            if (process / "cwd").resolve().name.lower() == "sussurro":
+                return "Sussurro"
+            return name
+        except (OSError, ValueError):
+            continue
+    return None
 
 
 class Preferences:
@@ -164,6 +208,11 @@ class AudioEngine:
                 props = client_properties(obj.proplist)
                 if props.get("application.name", "").startswith("Sonora"):
                     continue
+                if props.get("application.id") == "local.sussurro.gestures":
+                    target = next((s for s in groups["source"] if s["name"] == props.get("target.object")), None)
+                    if target and obj.source != target["index"]:
+                        await self.pulse.source_output_move(obj.index, target["index"])
+                    continue
                 if kind == "source" and obj.monitor_of_sink != 4294967295:
                     continue
                 key = f"{kind}:{obj.index}"
@@ -176,6 +225,8 @@ class AudioEngine:
                     "subtitle": obj.name if device else props.get("media.name", obj.name),
                     "volume": round(obj.volume.value_flat * 100), "mute": bool(obj.mute),
                     "channels": len(obj.volume.values),
+                    "card": getattr(obj, "card", None),
+                    "alsa_card": props.get("api.alsa.card"),
                     "identity": identity(props), "default": device and obj.name == default,
                     "icon": props.get("application.icon_name", "audio-card-symbolic" if device else "applications-multimedia-symbolic"),
                     "active": getattr(obj, "state", None) == "running" if device else not bool(obj.corked),
@@ -190,6 +241,8 @@ class AudioEngine:
         for device_kind, stream_kind in (("sink", "playback"), ("source", "recording")):
             for item in groups[device_kind]:
                 item["active"] = any(s["target"] == item["index"] and s["active"] for s in groups[stream_kind])
+                item["direct_owner"] = direct_capture_owner(item["alsa_card"]) if device_kind == "source" else None
+                item["active"] = item["active"] or bool(item["direct_owner"])
         cards = await self.pulse.card_list()
         for card in cards:
             self.objects[f"card:{card.index}"] = card
@@ -197,6 +250,7 @@ class AudioEngine:
                  "cards": [{"index": c.index, "title": c.proplist.get("device.description", c.name),
                             "active": c.profile_active.name if c.profile_active else "",
                             "profiles": [{"name": p.name, "title": p.description} for p in c.profile_list if p.available]} for c in cards]}
+        state["missing_sources"] = missing_microphones(cards, groups["source"])
         await self.apply_rules(state)
         state["rules"] = copy.deepcopy(self.prefs.data["rules"])
         state["scenes"] = list(self.prefs.data["scenes"])
@@ -210,9 +264,9 @@ class AudioEngine:
         if self.visible:
             for item in state["sink"]:
                 wanted[item["key"]] = (item["monitor"], None)
-            # Only monitor microphones that are already being used, or the default.
+            # Share existing server captures without taking hardware from direct ALSA apps.
             for item in state["source"]:
-                if item["active"] or item["default"]:
+                if item["active"] and not item["direct_owner"]:
                     wanted[item["key"]] = (item["name"], None)
             sinks = {item["index"]: item for item in state["sink"]}
             for item in state["playback"]:
@@ -267,6 +321,37 @@ class AudioEngine:
             return
         if action == "visible":
             self.visible = args[0]
+            return
+        if action == "microphone":
+            name = args[0]
+            if name.startswith("card:"):
+                card_name = name.removeprefix("card:")
+                missing = next(x for x in self.state["missing_sources"] if x["name"] == card_name)
+                alsa_card = missing.get("alsa_card")
+                if alsa_card and str(alsa_card).isdigit():
+                    for status in Path(f"/proc/asound/card{alsa_card}").glob("pcm*c/sub*/status"):
+                        if "RUNNING" in status.read_text():
+                            raise ValueError(f'{missing["title"]} está em uso direto. Termine a gravação e tente novamente.')
+                card = next(c for c in await self.pulse.card_list() if c.name == card_name)
+                original = card.profile_active.name
+                try:
+                    if original == missing["profile"]:
+                        await self.pulse.card_profile_set(card, "off")
+                    await self.pulse.card_profile_set(card, missing["profile"])
+                    source = None
+                    for _ in range(30):
+                        source = next((s for s in await self.pulse.source_list() if s.card == card.index and s.monitor_of_sink == 4294967295), None)
+                        if source:
+                            break
+                        await asyncio.sleep(.1)
+                    if source is None:
+                        raise ValueError(f'{missing["title"]} não pôde ser ativado no sistema de áudio.')
+                except Exception:
+                    await self.pulse.card_profile_set(card, original)
+                    raise
+            else:
+                source = next(s for s in await self.pulse.source_list() if s.name == name)
+            await self.pulse.default_set(source)
             return
         if action == "boost":
             self.prefs.data["boost"] = bool(args[0])
