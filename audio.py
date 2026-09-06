@@ -25,6 +25,24 @@ def identity(props):
     return "media.name:" + props.get("media.name", "unknown")
 
 
+def client_properties(props):
+    if props.get("application.name") != "parec":
+        return props
+    pid = props.get("application.process.id", "")
+    if not pid.isdigit():
+        return props
+    try:
+        status = Path(f"/proc/{pid}/status").read_text()
+        parent = next(line.split()[1] for line in status.splitlines() if line.startswith("PPid:"))
+        folder = Path(f"/proc/{parent}/cwd").resolve()
+        command = Path(f"/proc/{parent}/cmdline").read_bytes().split(b"\0")
+        if folder.name.lower() == "sussurro" and any(Path(arg.decode()).name == "app.py" for arg in command if arg):
+            return {**props, "application.name": "Sussurro", "application.id": "local.sussurro"}
+    except (OSError, ValueError, StopIteration):
+        pass
+    return props
+
+
 class Preferences:
     def __init__(self, path=CONFIG):
         self.path = path
@@ -143,7 +161,7 @@ class AudioEngine:
             objects = await getattr(self.pulse, method)()
             groups[kind] = []
             for obj in objects:
-                props = obj.proplist
+                props = client_properties(obj.proplist)
                 if props.get("application.name", "").startswith("Sonora"):
                     continue
                 if kind == "source" and obj.monitor_of_sink != 4294967295:

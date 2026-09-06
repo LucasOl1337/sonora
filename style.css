@@ -1,42 +1,38 @@
-window { background: #131417; color: #f2f3f3; font-family: "Noto Sans", sans-serif; font-size: 13px; }
-headerbar { background: #131417; box-shadow: none; border: none; min-height: 34px; }
-.brand { font-family: "Nimbus Sans Narrow", "DejaVu Sans", sans-serif; font-stretch: condensed; font-size: 34px; font-weight: 900; letter-spacing: -1px; }
-.eyebrow { color: #f07944; font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 1px; }
+window { background: #131417; color: #f2f3f3; font-family: "Noto Sans", sans-serif; font-size: 12px; }
+headerbar { background: #131417; box-shadow: none; border: none; min-height: 32px; padding: 3px 8px; }
+.brand { font-family: "Nimbus Sans Narrow", sans-serif; font-size: 22px; font-weight: 700; }
 .muted { color: #9ba0a4; }
-.small { font-size: 11px; }
-.section-title { font-weight: 700; font-size: 18px; }
-.card { background: #1b1c20; border: 1px solid #2f3036; border-radius: 14px; padding: 18px; }
-.master { background: #1b1c20; border: 1px solid #2f3036; border-radius: 14px; padding: 16px; }
-.title { font-size: 15px; font-weight: 700; }
-.percentage { font-family: "JetBrains Mono", monospace; font-size: 25px; font-weight: 600; }
+.small { font-size: 10px; }
 .mono { font-family: "JetBrains Mono", monospace; }
-.badge { background: #30211e; color: #f07944; border-radius: 6px; padding: 4px 8px; font-size: 10px; font-weight: 700; }
-.online { color: #92c7a3; font-size: 11px; }
-.offline { color: #f3b266; }
-.app-icon { background: #25262b; padding: 10px; border-radius: 12px; color: #c3c6c8; }
-button { background: #25262b; color: #f2f3f3; border: 1px solid #3b3d45; border-radius: 8px; box-shadow: none; min-height: 28px; padding: 5px 10px; }
-button:hover { background: #2f3036; border-color: #62656f; }
-button:checked, .accent { background: #f0500a; color: #16181a; border-color: #f0500a; font-weight: 700; }
-button:focus-visible, dropdown:focus-visible, entry:focus-visible { outline: 2px solid #f07944; outline-offset: 2px; }
+.section-label { color: #9ba0a4; font-size: 10px; letter-spacing: 0.7px; font-weight: 600; padding: 2px 6px; }
+.channel-list { background: #1b1c20; border: 1px solid #2f3036; border-radius: 7px; }
+.channel { padding: 5px 8px; min-height: 29px; }
+.channel + .channel { border-top: 1px solid #292a30; }
+.channel-name { font-size: 12px; font-weight: 500; }
+button { background: #25262b; color: #d9dcde; border: 1px solid #3b3d45; border-radius: 5px; box-shadow: none; min-height: 22px; min-width: 0; padding: 1px 7px; font-size: 11px; }
+button:hover { background: #303137; border-color: #62656f; }
+button:checked { background: #43291f; color: #f07944; border-color: #8a4526; }
+button:focus-visible, dropdown:focus-visible, entry:focus-visible { outline: 2px solid #f07944; outline-offset: 1px; }
 button.flat { background: transparent; border-color: transparent; }
-button.danger { color: #f18b85; }
-dropdown > button { background: #25262b; padding: 6px 8px; }
+button.default-device { background: transparent; border-color: transparent; color: #f07944; opacity: 1; }
+button.icon-button, menubutton.icon-button > button { min-width: 24px; min-height: 24px; padding: 0; }
+button.icon-button image, menubutton.icon-button image { -gtk-icon-size: 14px; }
+windowcontrols button { min-width: 24px; min-height: 24px; padding: 0; }
+windowcontrols button image { -gtk-icon-size: 14px; }
+dropdown > button { background: #232429; min-height: 22px; padding: 1px 6px; font-size: 11px; }
 popover contents { background: #25262b; color: #f2f3f3; border: 1px solid #454750; }
 popover modelbutton:hover, popover listview row:selected { background: #3a302b; }
-entry { background: #25262b; color: #f2f3f3; border: 1px solid #454750; border-radius: 8px; padding: 8px; }
-scale trough { background: #34363d; border-radius: 5px; min-height: 5px; min-width: 5px; }
-scale highlight { background: #f0500a; border-radius: 5px; }
-scale slider { background: #f2f3f3; border: 2px solid #1b1c20; border-radius: 20px; min-width: 15px; min-height: 15px; padding: 0; margin: -7px; box-shadow: 0 1px 4px #000; }
+entry { background: #25262b; color: #f2f3f3; border: 1px solid #454750; border-radius: 5px; padding: 4px 6px; min-height: 24px; }
+scale { padding: 5px 5px; min-height: 10px; }
+scale trough { background: #3c3e46; border-radius: 4px; min-height: 3px; min-width: 3px; }
+scale highlight { background: #f0500a; border-radius: 4px; }
+scale slider { background: #f2f3f3; border: 1px solid #1b1c20; border-radius: 20px; min-width: 11px; min-height: 11px; padding: 0; margin: -5px; box-shadow: none; }
 scale marks { color: #9ba0a4; font-size: 9px; }
-switch { background: #3b3d45; border-radius: 20px; }
-switch:checked { background: #f0500a; }
-switch slider { background: #f2f3f3; border-radius: 20px; }
-checkbutton check { border: 1px solid #62656f; border-radius: 4px; background: #25262b; }
+checkbutton check { border: 1px solid #62656f; border-radius: 3px; background: #25262b; min-width: 13px; min-height: 13px; }
 checkbutton check:checked { background: #f0500a; color: #16181a; }
-stackswitcher button { min-width: 90px; border: none; background: transparent; color: #9ba0a4; }
-stackswitcher button:checked { background: #2f3036; color: #f2f3f3; }
 separator { background: #2f3036; min-height: 1px; }
-scrollbar slider { background: #454750; border-radius: 10px; min-width: 6px; min-height: 6px; margin: 0; padding: 0; border: none; }
-.empty { padding: 35px; color: #9ba0a4; }
-.error { background: #422b24; color: #ffc4a8; border-radius: 8px; padding: 10px; }
-flowboxchild { padding: 0; }
+scrollbar slider { background: #454750; border-radius: 6px; min-width: 5px; min-height: 5px; margin: 0; padding: 0; border: none; }
+.empty { padding: 8px; }
+.error { background: #422b24; color: #ffc4a8; border-radius: 5px; padding: 6px; }
+.online { color: #92c7a3; font-size: 10px; }
+expander title { padding: 5px 0; font-weight: 600; }

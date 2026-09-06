@@ -73,7 +73,7 @@ class Choice(Gtk.DropDown):
 
     def setup_label(self, _, item):
         text = label()
-        text.set_max_width_chars(30)
+        text.set_max_width_chars(18)
         item.set_child(text)
 
     def update(self, options, selected):
@@ -93,120 +93,130 @@ class Choice(Gtk.DropDown):
 
 
 class Meter(Gtk.DrawingArea):
-    def __init__(self, engine, vertical=False):
+    def __init__(self, engine):
         super().__init__()
-        self.engine, self.key, self.vertical = engine, None, vertical
+        self.engine, self.key = engine, None
         self.display = 0.0
         self.muted = False
-        self.set_content_width(12 if vertical else 100)
-        self.set_content_height(130 if vertical else 7)
+        self.set_content_width(100)
+        self.set_content_height(3)
         self.set_draw_func(self.draw)
-        self.set_tooltip_text("Pico real do áudio, de −60 a 0 dBFS")
+        self.set_tooltip_text("Nível real do áudio, de −60 a 0 dBFS")
 
     def draw(self, _, ctx, width, height):
         sample, timestamp = self.engine.levels.get(self.key, (0, 0))
         value = max(0, (20 * math.log10(max(sample, 0.001)) + 60) / 60) if time.monotonic() - timestamp < 0.3 and not self.muted else 0
         self.display = max(value, self.display * 0.83)
-        steps, gap = (28, 2) if self.vertical else (55, 2)
-        length = height if self.vertical else width
-        size = max(1, (length - (steps - 1) * gap) / steps)
-        for i in range(steps):
-            if i / steps <= self.display and self.display > 0.005:
-                color = (0.95, 0.33, 0.08) if i < steps * 0.8 else ((0.96, 0.67, 0.24) if i < steps * 0.95 else (0.96, 0.25, 0.27))
-            else:
-                color = (0.18, 0.19, 0.22)
-            ctx.set_source_rgb(*color)
-            if self.vertical:
-                ctx.rectangle(0, height - (i + 1) * (size + gap) + gap, width, size)
-            else:
-                ctx.rectangle(i * (size + gap), 0, size, height)
-            ctx.fill()
+        ctx.set_source_rgb(0.19, 0.20, 0.23)
+        ctx.rectangle(0, 0, width, height)
+        ctx.fill()
+        ctx.set_source_rgb(*( (0.96, 0.28, 0.25) if self.display > 0.97 else (0.95, 0.39, 0.16)))
+        ctx.rectangle(0, 0, width * self.display, height)
+        ctx.fill()
+
+
+def short_device(name):
+    if "High Definition Audio Controller" in name and "(HDMI" in name:
+        return name.rsplit("(", 1)[1].rstrip(")") + " · " + name.split(" High Definition", 1)[0]
+    return name.replace(" Analog Stereo", "").replace(" Mono", "").replace(" Digital Stereo", "")
+
+
+def icon_button(icon, tooltip, callback=None, toggle=False):
+    widget = Gtk.ToggleButton() if toggle else Gtk.Button()
+    widget.set_icon_name(icon)
+    widget.set_tooltip_text(tooltip)
+    widget.add_css_class("icon-button")
+    widget.update_property([Gtk.AccessibleProperty.LABEL], [tooltip])
+    if callback:
+        widget.connect("clicked", lambda _: callback())
+    return widget
 
 
 class Channel(Gtk.Box):
-    def __init__(self, window, item, strip=False):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        self.add_css_class("card")
-        self.window, self.item, self.strip = window, item, strip
+    def __init__(self, window, item):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.add_css_class("channel")
+        self.set_valign(Gtk.Align.START)
+        self.window, self.item = window, item
         self.updating = False
         self.edit_until = 0
         self.pending = None
         self.volume_timer = None
         self.device = item["kind"] in ("sink", "source")
-        self.set_size_request(225 if strip else -1, -1)
-        top = box()
-        self.icon = Gtk.Image.new_from_icon_name(item["icon"])
-        self.icon.set_pixel_size(24)
-        self.icon.add_css_class("app-icon")
-        top.append(self.icon)
-        titles = box(True, 3)
-        titles.set_hexpand(True)
-        self.title = label(item["title"], "title")
-        self.title.set_max_width_chars(26 if strip else 65)
-        self.subtitle = label("", "muted small")
-        self.subtitle.set_max_width_chars(25 if strip else 60)
-        titles.append(self.title)
-        titles.append(self.subtitle)
-        top.append(titles)
-        self.append(top)
-        self.readout = label("", "percentage")
-        self.mute = Gtk.ToggleButton(label="Silenciar")
+        is_input = item["kind"] in ("source", "recording")
+        self.icon = Gtk.Image.new_from_icon_name("audio-input-microphone-symbolic" if is_input else ("audio-speakers-symbolic" if self.device else item["icon"]))
+        self.icon.set_pixel_size(16)
+        self.icon.set_size_request(18, -1)
+        self.icon.set_tooltip_text("Entrada de áudio" if is_input else "Saída de áudio")
+        self.append(self.icon)
+        self.title = label("", "channel-name", True)
+        self.title.set_size_request(180, -1)
+        self.title.set_max_width_chars(24)
+        self.append(self.title)
+        self.mute = icon_button("audio-volume-high-symbolic", "Silenciar " + item["title"], toggle=True)
         self.mute.connect("toggled", self.on_mute)
-        self.mute.set_tooltip_text("Silenciar este canal")
-        self.meter = Meter(window.engine, vertical=strip)
-        self.meter.key = item["key"]
-        self.scale = Gtk.Scale.new_with_range(Gtk.Orientation.VERTICAL if strip else Gtk.Orientation.HORIZONTAL, 0, window.max_volume, 1)
+        self.append(self.mute)
+        levels = box(True, 0)
+        levels.set_valign(Gtk.Align.CENTER)
+        levels.set_size_request(136, -1)
+        self.scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, window.max_volume, 1)
         self.scale.set_draw_value(False)
         self.scale.set_hexpand(True)
         self.scale.set_tooltip_text("Volume de " + item["title"])
-        if strip:
-            self.scale.set_inverted(True)
-            self.scale.set_size_request(40, 130)
-            self.scale.set_hexpand(False)
-            self.scale.add_mark(100, Gtk.PositionType.RIGHT, "100")
-            self.scale.add_mark(50, Gtk.PositionType.RIGHT, "50")
-            self.scale.add_mark(0, Gtk.PositionType.RIGHT, "0")
         self.scale.connect("value-changed", self.on_volume)
-        if strip:
-            controls = box(spacing=22)
-            controls.set_halign(Gtk.Align.CENTER)
-            controls.append(self.meter)
-            controls.append(self.scale)
-            self.readout.set_halign(Gtk.Align.CENTER)
-            self.append(self.readout)
-            self.append(controls)
-            self.append(self.mute)
-        else:
-            controls = box()
-            controls.append(self.scale)
-            controls.append(self.readout)
-            controls.append(self.mute)
-            self.append(controls)
-            self.append(self.meter)
+        levels.append(self.scale)
+        self.meter = Meter(window.engine)
+        self.meter.key = item["key"]
+        levels.append(self.meter)
+        self.append(levels)
+        self.readout = label("", "mono small")
+        self.readout.set_xalign(1)
+        self.readout.set_size_request(40, -1)
+        self.append(self.readout)
         self.route = None
         self.remember = None
         self.default_btn = None
-        if not self.device:
-            self.append(label("SAÍDA" if item["kind"] == "playback" else "MICROFONE", "eyebrow"))
-            self.route = Choice(lambda name: self.send("route", name), "Dispositivo usado por este aplicativo")
-            self.append(self.route)
-            self.remember = Gtk.CheckButton(label="Lembrar para este app")
-            self.remember.add_css_class("small")
-            self.remember.connect("toggled", self.on_remember)
-            self.append(self.remember)
-        else:
-            self.default_btn = button("Usar como padrão", lambda: self.send("default"))
-            self.append(self.default_btn)
+        if self.device:
+            destination = box(spacing=8)
+            destination.set_size_request(174, -1)
+            destination.set_valign(Gtk.Align.CENTER)
+            self.default_btn = button("Usar", lambda: self.send("default"))
+            self.default_btn.set_size_request(62, -1)
+            self.default_btn.set_tooltip_text("Usar como microfone padrão" if is_input else "Usar como saída padrão")
+            destination.append(self.default_btn)
+            self.activity = label("", "muted small")
+            destination.append(self.activity)
+            self.append(destination)
+            self.more = Gtk.MenuButton(icon_name="view-more-symbolic")
+            self.more.add_css_class("icon-button")
+            self.more.set_tooltip_text("Conectores e balanço")
+            self.device_popover = Gtk.Popover()
+            advanced = box(True, 10)
+            for side in ("top", "bottom", "start", "end"):
+                getattr(advanced, "set_margin_" + side)(8)
+            advanced.append(label(item["title"], "channel-name"))
             self.ports = Choice(lambda name: self.send("port", name), "Conector do dispositivo")
-            self.append(self.ports)
+            advanced.append(self.ports)
             if item["channels"] == 2:
-                expander = Gtk.Expander(label="Balanço esquerdo / direito")
+                advanced.append(label("Balanço esquerdo / direito", "small muted"))
                 balance = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, -1, 1, 0.05)
+                balance.set_size_request(220, -1)
                 balance.set_draw_value(False)
                 balance.add_mark(0, Gtk.PositionType.BOTTOM, "Centro")
                 balance.connect("value-changed", lambda w: self.send("balance", w.get_value()))
-                expander.set_child(balance)
-                self.append(expander)
+                advanced.append(balance)
+            self.device_popover.set_child(advanced)
+            self.more.set_popover(self.device_popover)
+            self.append(self.more)
+        else:
+            self.route = Choice(lambda name: self.send("route", name), "Microfone deste app" if is_input else "Saída deste app")
+            self.route.set_hexpand(False)
+            self.route.set_size_request(174, -1)
+            self.route.set_valign(Gtk.Align.CENTER)
+            self.append(self.route)
+            self.remember = icon_button("non-starred-symbolic", "Lembrar dispositivo, volume e mudo para este app", toggle=True)
+            self.remember.connect("toggled", self.on_remember)
+            self.append(self.remember)
         self.update(item, window.state)
 
     def send(self, action, *args):
@@ -215,9 +225,8 @@ class Channel(Gtk.Box):
     def on_volume(self, *_):
         if self.updating:
             return
-        value = round(self.scale.get_value())
-        self.readout.set_text(f"{value}%")
-        self.pending = value
+        self.pending = round(self.scale.get_value())
+        self.readout.set_text(f"{self.pending}%")
         self.edit_until = time.monotonic() + 1
         if not self.volume_timer:
             self.volume_timer = GLib.timeout_add(60, self.flush_volume)
@@ -238,16 +247,19 @@ class Channel(Gtk.Box):
     def update(self, item, state):
         self.updating = True
         self.item = item
-        self.title.set_text(item["title"])
-        self.title.set_tooltip_text(item["title"])
-        self.subtitle.set_text(("PADRÃO · " if item["default"] else "") + ("Em uso" if item["active"] else "Em repouso") if self.device else item["subtitle"])
-        self.subtitle.set_tooltip_text(item["name"] if self.device else item["subtitle"])
+        title = short_device(item["title"]) if self.device else item["title"]
+        if title.startswith("qemu-system-"):
+            title = "Máquina virtual"
+        self.title.set_text(title)
+        self.title.set_tooltip_text(item["title"] + "\n" + item["subtitle"])
         self.scale.set_range(0, max(self.window.max_volume, item["volume"]))
         if time.monotonic() > self.edit_until:
             self.scale.set_value(item["volume"])
             self.readout.set_text(f'{item["volume"]}%')
+        is_input = item["kind"] in ("source", "recording")
         self.mute.set_active(item["mute"])
-        self.mute.set_label("Silenciado" if item["mute"] else "Silenciar")
+        self.mute.set_icon_name(("microphone-disabled-symbolic" if is_input else "audio-volume-muted-symbolic") if item["mute"] else ("microphone-sensitivity-high-symbolic" if is_input else "audio-volume-high-symbolic"))
+        self.mute.set_tooltip_text(("Reativar " if item["mute"] else "Silenciar ") + title)
         self.meter.muted = item["mute"]
         if item["kind"] == "recording":
             self.meter.key = f'source:{item["target"]}'
@@ -256,228 +268,133 @@ class Channel(Gtk.Box):
             devices = state["sink" if item["kind"] == "playback" else "source"]
             rule = state["rules"].get(item["kind"] + ":" + item["identity"])
             target = next((d["name"] for d in devices if d["index"] == item["target"]), None)
-            options = [(None, "Seguir padrão do sistema")] + [(d["name"], d["title"]) for d in devices]
+            options = [(None, "Padrão do sistema")] + [(d["name"], short_device(d["title"])) for d in devices]
             if item["following"] or (rule and rule.get("target") is None):
                 target = None
             self.route.update(options, target)
             self.remember.set_active(bool(rule))
+            self.remember.set_icon_name("starred-symbolic" if rule else "non-starred-symbolic")
         else:
-            self.default_btn.set_label("Dispositivo padrão" if item["default"] else "Usar como padrão")
+            self.default_btn.set_label("Padrão" if item["default"] else "Usar")
             self.default_btn.set_sensitive(not item["default"])
+            if item["default"]:
+                self.default_btn.add_css_class("default-device")
+            else:
+                self.default_btn.remove_css_class("default-device")
+            self.activity.set_text("Em uso" if item["active"] else "")
             self.ports.update([(p["name"], p["title"]) for p in item["ports"]], item["port"])
-            self.ports.set_visible(len(item["ports"]) > 1)
-        self.updating = False
-
-
-class Master(Gtk.Box):
-    def __init__(self, window, kind):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        self.add_css_class("master")
-        self.set_hexpand(True)
-        self.window, self.kind, self.current = window, kind, None
-        self.updating = False
-        self.edit_until = 0
-        self.volume_timer = None
-        self.pending = None
-        self.append(label("SAÍDA PRINCIPAL" if kind == "sink" else "MICROFONE PRINCIPAL", "eyebrow"))
-        self.choice = Choice(self.set_default, "Escolher o dispositivo padrão do sistema")
-        self.append(self.choice)
-        row = box()
-        self.scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
-        self.scale.set_draw_value(False)
-        self.scale.set_hexpand(True)
-        self.scale.connect("value-changed", self.volume)
-        self.percent = label("0%", "mono small")
-        self.mute = Gtk.ToggleButton()
-        self.mute.set_icon_name("audio-volume-high-symbolic" if kind == "sink" else "microphone-sensitivity-high-symbolic")
-        self.mute.set_tooltip_text("Silenciar saída principal" if kind == "sink" else "Silenciar microfone principal")
-        self.mute.connect("toggled", self.toggle)
-        row.append(self.mute)
-        row.append(self.scale)
-        row.append(self.percent)
-        self.append(row)
-        self.meter = Meter(window.engine)
-        self.append(self.meter)
-
-    def set_default(self, name):
-        item = next(i for i in self.window.state[self.kind] if i["name"] == name)
-        self.window.engine.command("default", self.kind, item["index"])
-
-    def volume(self, *_):
-        if not self.updating and self.current:
-            value = round(self.scale.get_value())
-            self.edit_until = time.monotonic() + 1
-            self.percent.set_text(f"{value}%")
-            self.pending = (self.current["index"], value)
-            if not self.volume_timer:
-                self.volume_timer = GLib.timeout_add(60, self.flush_volume)
-
-    def flush_volume(self):
-        self.window.engine.command("volume", self.kind, *self.pending)
-        self.volume_timer = None
-        return False
-
-    def toggle(self, *_):
-        if not self.updating and self.current:
-            self.window.engine.command("mute", self.kind, self.current["index"], self.mute.get_active())
-
-    def update(self, state):
-        self.updating = True
-        devices = state[self.kind]
-        self.current = next((d for d in devices if d["default"]), None)
-        self.choice.update([(d["name"], d["title"]) for d in devices], state["defaults"][self.kind])
-        self.scale.set_sensitive(bool(self.current))
-        self.mute.set_sensitive(bool(self.current))
-        if self.current:
-            self.meter.key = self.current["key"]
-            self.meter.muted = self.current["mute"]
-            self.scale.set_range(0, max(self.window.max_volume, self.current["volume"]))
-            if time.monotonic() > self.edit_until:
-                self.scale.set_value(self.current["volume"])
-                self.percent.set_text(f'{self.current["volume"]}%')
-            self.mute.set_active(self.current["mute"])
-        else:
-            self.meter.key = None
+            self.ports.set_visible(bool(item["ports"]))
+            self.more.set_sensitive(item["channels"] == 2 or bool(item["ports"]))
         self.updating = False
 
 
 class Window(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Sonora")
-        self.set_default_size(1080, 940)
-        self.set_size_request(740, 580)
-        self.app = app
-        self.engine = app.engine
+        self.set_default_size(780, -1)
+        self.app, self.engine = app, app.engine
         self.state = {}
         self.max_volume = 100
         self.channels = {}
         self.signature = None
-        self.cards_signature = None
+        self.settings_window = None
         self.connect("close-request", self.hide_window)
-        headerbar = Gtk.HeaderBar()
-        headerbar.set_title_widget(Gtk.Label(label="Sonora"))
-        self.set_titlebar(headerbar)
-        root = box(True, 18)
-        for side in ("top", "bottom", "start", "end"):
-            getattr(root, "set_margin_" + side)(24 if side != "top" else 8)
-        self.set_child(root)
-        header = box(spacing=14)
+        header = Gtk.HeaderBar()
+        header.set_decoration_layout(":close")
+        title = box(spacing=7)
         icon = Gtk.Image.new_from_file(str(ROOT / "assets" / "sonora.svg"))
-        icon.set_pixel_size(46)
-        header.append(icon)
-        title = box(True, 0)
+        icon.set_pixel_size(21)
+        title.append(icon)
         title.append(label("SONORA", "brand"))
-        title.append(label("Controle de áudio", "muted small"))
-        title.set_hexpand(True)
-        header.append(title)
-        self.connection = label("Conectando…", "online mono")
-        header.append(self.connection)
-        root.append(header)
-        self.error = box()
-        self.error.add_css_class("error")
+        header.set_title_widget(title)
+        header.pack_end(icon_button("emblem-system-symbolic", "Opções do Sonora", self.open_settings))
+        self.set_titlebar(header)
+        root = box(True, 8)
+        self.root = root
+        root.set_valign(Gtk.Align.START)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(root, "set_margin_" + side)(12)
+        # Center the natural-width list if the user expands the window.
+        centered = Gtk.CenterBox()
+        centered.set_center_widget(root)
+        self.set_child(centered)
+        self.error = box(spacing=6, css="error")
         self.error_label = label("", expand=True)
         self.error_label.set_wrap(True)
         self.error.append(self.error_label)
-        self.error.append(button("Fechar", lambda: self.error.set_visible(False), "flat"))
+        self.error.append(icon_button("window-close-symbolic", "Fechar aviso", lambda: self.error.set_visible(False)))
         self.error.set_visible(False)
         root.append(self.error)
-        masters = box(spacing=14)
-        masters.set_homogeneous(True)
-        self.output = Master(self, "sink")
-        self.input = Master(self, "source")
-        masters.append(self.output)
-        masters.append(self.input)
-        root.append(masters)
-        self.stack = Gtk.Stack()
-        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        self.stack.set_transition_duration(120)
-        tabs = Gtk.StackSwitcher(stack=self.stack)
-        tabs.set_halign(Gtk.Align.START)
-        root.append(tabs)
-        self.stack.set_vexpand(True)
-        root.append(self.stack)
-        self.mixer = self.page("mixer", "Mixer")
-        heading = box()
-        heading.append(label("Aplicativos", "section-title", True))
-        self.count = label("", "muted small mono")
-        heading.append(self.count)
-        self.mixer.append(heading)
-        self.empty = label("Nenhum aplicativo reproduzindo áudio.\nAbra uma música, um vídeo ou um jogo para ver seus canais aqui.", "empty")
-        self.empty.set_wrap(True)
-        self.mixer.append(self.empty)
-        self.playback = Gtk.FlowBox()
-        self.playback.set_selection_mode(Gtk.SelectionMode.NONE)
-        self.playback.set_homogeneous(True)
-        self.playback.set_min_children_per_line(2)
-        self.playback.set_max_children_per_line(4)
-        self.playback.set_column_spacing(14)
-        self.playback.set_row_spacing(14)
-        self.mixer.append(self.playback)
-        self.mixer.append(label("Usando o microfone", "section-title"))
-        self.mixer.append(label("A entrada escolhida vale para a captura ativa de cada app.", "muted small"))
-        self.recording = box(True, 12)
-        self.mixer.append(self.recording)
-        self.record_empty = label("Nenhum aplicativo capturando áudio.", "muted")
-        self.mixer.append(self.record_empty)
-        devices = self.page("devices", "Dispositivos")
-        devices.append(label("Saídas de áudio", "section-title"))
-        self.sinks = box(True, 12)
-        devices.append(self.sinks)
-        devices.append(label("Microfones e entradas", "section-title"))
-        self.sources = box(True, 12)
-        devices.append(self.sources)
-        devices.append(label("Perfis de hardware", "section-title"))
-        devices.append(label("Escolha os modos disponíveis de cada placa, como analógico, HDMI ou duplex.", "muted small"))
-        self.hardware = box(True, 12)
-        devices.append(self.hardware)
-        prefs = self.page("preferences", "Preferências")
-        options = box(True, 15, "card")
-        startup = Gtk.CheckButton(label="Iniciar Sonora com o computador")
-        startup.set_active(AUTOSTART.exists())
-        startup.connect("toggled", self.autostart)
-        options.append(startup)
-        self.boost_check = Gtk.CheckButton(label="Permitir volume até 150%")
-        self.boost_check.set_tooltip_text("Volumes acima de 100% podem distorcer o áudio")
-        self.boost_check.connect("toggled", self.boost)
-        options.append(self.boost_check)
-        info = label("Ao fechar a janela, Sonora continua aplicando as preferências salvas.\nOs medidores param enquanto a janela está oculta. Use Encerrar para sair.", "muted small")
-        info.set_wrap(True)
-        options.append(info)
-        prefs.append(options)
-        prefs.append(label("Preferências por aplicativo", "section-title"))
-        info = label("Marque “Lembrar para este app” no mixer para salvar dispositivo, volume e mudo.\nA regra será aplicada quando o app voltar a reproduzir ou capturar áudio.", "muted small")
-        info.set_wrap(True)
-        prefs.append(info)
-        self.rules = box(True, 12)
-        prefs.append(self.rules)
-        scenes = self.page("scenes", "Cenas")
-        scenes.append(label("Seu áudio, pronto para cada momento", "section-title"))
-        info = label("Salve os dispositivos padrão e os volumes dos canais atuais.\nAo aplicar, os dispositivos desconectados e os apps fechados são ignorados.", "muted")
-        info.set_wrap(True)
-        scenes.append(info)
-        row = box()
-        self.scene_name = Gtk.Entry(placeholder_text="Nome da cena, por exemplo: Trabalho")
-        self.scene_name.set_hexpand(True)
-        row.append(self.scene_name)
-        row.append(button("Salvar cena atual", self.save_scene, "accent"))
-        scenes.append(row)
-        self.scenes = box(True, 12)
-        scenes.append(self.scenes)
-        footer = box()
-        self.status = label("Conectando ao serviço de áudio…", "muted small", True)
+        self.scroll = Gtk.ScrolledWindow()
+        self.scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.scroll.set_propagate_natural_height(True)
+        monitor = Gdk.Display.get_default().get_monitors().get_item(0)
+        self.scroll.set_max_content_height(max(260, monitor.get_geometry().height - 160))
+        self.body = box(True, 6)
+        self.scroll.set_child(self.body)
+        root.append(self.scroll)
+        self.body.append(label("DISPOSITIVOS", "section-label"))
+        self.devices = box(True, 0, "channel-list")
+        self.body.append(self.devices)
+        heading = box(spacing=8)
+        heading.set_margin_top(8)
+        heading.append(label("APLICATIVOS", "section-label", True))
+        heading.append(label("alto-falante: saída · microfone: entrada", "muted small"))
+        self.body.append(heading)
+        self.apps = box(True, 0, "channel-list")
+        self.body.append(self.apps)
+        self.empty = label("Nenhum aplicativo com áudio aberto.", "empty muted")
+        self.body.append(self.empty)
+        footer = box(spacing=8)
+        self.status = label("Conectando…", "small muted", True)
         footer.append(self.status)
+        self.connection = label("●", "online")
+        footer.append(self.connection)
         footer.append(button("Encerrar", app.quit, "flat"))
         root.append(footer)
         GLib.timeout_add(33, self.tick)
 
-    def page(self, name, title):
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        content = box(True, 16)
-        content.set_margin_end(6)
-        scroll.set_child(content)
-        self.stack.add_titled(scroll, name, title)
-        return content
+    def open_settings(self):
+        if self.settings_window is None:
+            self.settings_window = Gtk.Window(title="Opções do Sonora", transient_for=self, destroy_with_parent=True)
+            self.settings_window.set_default_size(480, 430)
+            self.settings_window.connect("close-request", lambda w: (w.set_visible(False), True)[1])
+            content = box(True, 12)
+            for side in ("top", "bottom", "start", "end"):
+                getattr(content, "set_margin_" + side)(16)
+            scroll = Gtk.ScrolledWindow()
+            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroll.set_child(content)
+            self.settings_window.set_child(scroll)
+            startup = Gtk.CheckButton(label="Iniciar com o computador")
+            startup.set_active(AUTOSTART.exists())
+            startup.connect("toggled", self.autostart)
+            content.append(startup)
+            self.boost_check = Gtk.CheckButton(label="Permitir volume até 150%")
+            self.boost_check.set_active(self.state.get("boost", False))
+            self.boost_check.connect("toggled", self.boost)
+            content.append(self.boost_check)
+            text = label("Fechar a janela mantém as regras em segundo plano.\nUse Encerrar para sair. A estrela salva as preferências de um app.", "small muted")
+            text.set_wrap(True)
+            content.append(text)
+            scenes = box(True, 8)
+            row = box(spacing=8)
+            self.scene_name = Gtk.Entry(placeholder_text="Nome da cena")
+            self.scene_name.set_hexpand(True)
+            row.append(self.scene_name)
+            row.append(button("Salvar atual", self.save_scene))
+            scenes.append(row)
+            self.scenes = box(True, 6)
+            scenes.append(self.scenes)
+            self.rules = box(True, 6)
+            self.hardware = box(True, 6)
+            for name, child in (("Cenas", scenes), ("Preferências salvas", self.rules), ("Perfis de hardware", self.hardware)):
+                expander = Gtk.Expander(label=name)
+                expander.set_child(child)
+                content.append(expander)
+            self.settings_content = content
+            self.update_saved()
+        self.settings_window.present()
 
     def autostart(self, check):
         try:
@@ -490,14 +407,13 @@ class Window(Gtk.ApplicationWindow):
             self.show_error(str(exc))
 
     def boost(self, check):
-        self.max_volume = 150 if check.get_active() else 100
         if self.state.get("boost") != check.get_active():
             self.engine.command("boost", check.get_active())
 
     def save_scene(self):
         name = self.scene_name.get_text().strip()
         if name in self.state.get("scenes", []):
-            self.show_error("Já existe uma cena com esse nome. Escolha outro ou exclua a anterior.")
+            self.show_error("Já existe uma cena com esse nome.")
             return
         self.engine.command("save_scene", name)
         self.scene_name.set_text("")
@@ -508,6 +424,8 @@ class Window(Gtk.ApplicationWindow):
         return False
 
     def hide_window(self, *_):
+        if self.settings_window:
+            self.settings_window.set_visible(False)
         self.set_visible(False)
         self.engine.command("visible", False)
         return True
@@ -515,87 +433,89 @@ class Window(Gtk.ApplicationWindow):
     def update(self, state):
         self.state = state
         connected = state.get("connected", False)
-        self.connection.set_text("● PIPEWIRE / PULSE" if connected else "● RECONECTANDO")
-        self.stack.set_sensitive(connected)
-        self.output.set_sensitive(connected)
-        self.input.set_sensitive(connected)
+        self.connection.set_text("●" if connected else "Reconectando…")
+        self.body.set_sensitive(connected)
         if not connected:
             return False
         self.max_volume = 150 if state["boost"] else 100
-        self.boost_check.set_active(state["boost"])
-        self.output.update(state)
-        self.input.update(state)
-        self.count.set_text(f'{len(state["playback"]):02d} CANAIS')
-        self.empty.set_visible(not state["playback"])
-        self.record_empty.set_visible(not state["recording"])
-        containers = {"playback": self.playback, "recording": self.recording, "sink": self.sinks, "source": self.sources}
-        keys = {item["key"] for kind in containers for item in state[kind]}
+        if self.settings_window:
+            self.boost_check.set_active(state["boost"])
+        items = [item for kind in ("sink", "source", "playback", "recording") for item in state[kind]]
+        keys = {item["key"] for item in items}
+        structure_changed = keys != set(self.channels)
         for key in list(self.channels):
             if key not in keys:
                 channel = self.channels.pop(key)
                 if channel.volume_timer:
                     GLib.source_remove(channel.volume_timer)
-                parent = channel.get_parent()
-                if isinstance(parent, Gtk.FlowBoxChild):
-                    parent.get_parent().remove(parent)
-                else:
-                    parent.remove(channel)
-        for kind, container in containers.items():
-            for item in state[kind]:
-                if item["key"] not in self.channels:
-                    channel = Channel(self, item, strip=kind == "playback")
-                    self.channels[item["key"]] = channel
-                    container.append(channel)
-                else:
-                    self.channels[item["key"]].update(item, state)
-        signature = json.dumps([state["rules"], state["scenes"], [(i["name"], i["title"]) for i in state["sink"] + state["source"]]], sort_keys=True)
+                channel.get_parent().remove(channel)
+        for item in items:
+            if item["key"] not in self.channels:
+                channel = Channel(self, item)
+                self.channels[item["key"]] = channel
+                (self.devices if channel.device else self.apps).append(channel)
+            else:
+                self.channels[item["key"]].update(item, state)
+        previous = {True: None, False: None}
+        for item in items:
+            channel = self.channels[item["key"]]
+            container = self.devices if channel.device else self.apps
+            container.reorder_child_after(channel, previous[channel.device])
+            previous[channel.device] = channel
+        self.empty.set_visible(not state["playback"] and not state["recording"])
+        count = len(state["playback"]) + len(state["recording"])
+        self.status.set_text(f'{len(state["sink"])} saídas · {len(state["source"])} entradas · {count} canais de apps')
+        signature = json.dumps([state["rules"], state["scenes"], state["cards"], [(d["name"], d["title"]) for d in state["sink"] + state["source"]]], sort_keys=True)
         if signature != self.signature:
             self.signature = signature
-            self.update_saved(state)
-        signature = json.dumps(state["cards"], sort_keys=True)
-        if signature != self.cards_signature:
-            self.cards_signature = signature
-            clear(self.hardware)
-            for card in state["cards"]:
-                row = box(True, 10, "card")
-                row.append(label(card["title"], "title"))
-                choice = Choice(lambda value, index=card["index"]: self.engine.command("profile", index, value), "Perfil de hardware")
-                choice.update([(p["name"], p["title"]) for p in card["profiles"]], card["active"])
-                row.append(choice)
-                self.hardware.append(row)
-        self.status.set_text(f'{len(state["sink"])} saídas · {len(state["source"])} entradas · {len(state["rules"])} preferências salvas')
+            self.update_saved()
+        if structure_changed:
+            GLib.idle_add(self.fit_to_content)
         return False
 
-    def update_saved(self, state):
+    def fit_to_content(self):
+        natural_height = self.body.measure(Gtk.Orientation.VERTICAL, max(1, self.body.get_width()))[1]
+        self.scroll.set_min_content_height(min(natural_height, self.scroll.get_max_content_height()))
+        self.set_default_size(780, -1)
+        return False
+
+    def update_saved(self):
+        if self.settings_window is None or not self.state.get("connected"):
+            return
+        state = self.state
         clear(self.rules)
-        names = {d["name"]: d["title"] for d in state["sink"] + state["source"]}
+        names = {d["name"]: short_device(d["title"]) for d in state["sink"] + state["source"]}
         if not state["rules"]:
-            self.rules.append(label("Nenhuma preferência salva ainda.", "empty"))
+            self.rules.append(label("Nenhuma preferência salva.", "small muted"))
         for key, rule in state["rules"].items():
-            row = box(css="card")
-            text = box(True, 5)
+            row = box(spacing=8)
+            text = box(True, 2)
             text.set_hexpand(True)
-            text.append(label(rule["title"] + (" · reprodução" if rule["kind"] == "playback" else " · microfone"), "title"))
+            text.append(label(rule["title"], "channel-name"))
             target = rule.get("target")
-            text.append(label(names.get(target, "Dispositivo desconectado") if target else "Segue o padrão do sistema", "muted small"))
-            text.append(label(f'{rule["volume"]}% · ' + ("silenciado" if rule["mute"] else "som ligado"), "small mono"))
+            detail = names.get(target, "Dispositivo desconectado") if target else "Padrão do sistema"
+            text.append(label(f'{detail} · {rule["volume"]}%' + (" · mudo" if rule["mute"] else ""), "small muted"))
             row.append(text)
-            row.append(button("Esquecer", lambda key=key: self.engine.command("forget", key), "flat"))
+            row.append(button("Esquecer", lambda key=key: self.engine.command("forget", key)))
             self.rules.append(row)
         clear(self.scenes)
-        if not state["scenes"]:
-            self.scenes.append(label("Crie sua primeira cena com o áudio do jeito que você gosta.", "empty"))
         for name in state["scenes"]:
-            row = box(css="card")
-            row.append(label(name, "title", True))
-            row.append(button("Aplicar", lambda name=name: self.engine.command("load_scene", name), "accent"))
-            row.append(button("Excluir", lambda name=name: self.engine.command("delete_scene", name), "flat"))
+            row = box(spacing=8)
+            row.append(label(name, expand=True))
+            row.append(button("Aplicar", lambda name=name: self.engine.command("load_scene", name)))
+            row.append(icon_button("edit-delete-symbolic", "Excluir " + name, lambda name=name: self.engine.command("delete_scene", name)))
             self.scenes.append(row)
+        clear(self.hardware)
+        for card in state["cards"]:
+            row = box(True, 4)
+            row.append(label(card["title"], "small muted"))
+            choice = Choice(lambda value, index=card["index"]: self.engine.command("profile", index, value), "Perfil de hardware")
+            choice.update([(p["name"], p["title"]) for p in card["profiles"]], card["active"])
+            row.append(choice)
+            self.hardware.append(row)
 
     def tick(self):
         if self.is_visible():
-            self.output.meter.queue_draw()
-            self.input.meter.queue_draw()
             for channel in self.channels.values():
                 if channel.get_mapped():
                     channel.meter.queue_draw()

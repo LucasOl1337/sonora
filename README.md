@@ -1,17 +1,18 @@
 # Sonora
 
-Mixer nativo para Omarchy e PipeWire, com a paleta grafite e laranja do Sussurro.
+Mixer compacto para Omarchy e PipeWire, com a paleta grafite e laranja do Sussurro. A janela abre flutuante e ajusta a altura à lista de canais.
 
 Abra **Sonora** no lançador do Omarchy ou execute `sonora` no terminal.
 
 ## Controles
 
-- Os dois painéis superiores selecionam a saída e o microfone padrão, com volume, mudo e medidor de sinal.
-- **Mixer** mostra os canais de reprodução dos apps e os apps capturando áudio. Cada canal tem volume, mudo e escolha de dispositivo.
-- **Lembrar para este app** salva dispositivo, volume e mudo. Escolha **Seguir padrão do sistema** para acompanhar a saída ou a entrada padrão. A preferência continua funcionando quando o app reabre.
-- **Dispositivos** oferece volume por dispositivo, seleção do padrão, conectores, balanço estéreo e perfis de hardware.
-- **Preferências** permite iniciar com a sessão, liberar amplificação até 150% e esquecer regras salvas.
-- **Cenas** salva uma combinação dos padrões, volumes, mudo e destinos dos apps atuais. Ao aplicar, só altera os dispositivos e apps disponíveis. Não abre apps nem conecta hardware.
+- **Dispositivos** e **Aplicativos** ficam juntos na mesma lista, sem abas. Cada linha tem nome, mudo, volume, medidor de sinal e escolha do destino.
+- Nos dispositivos, **Usar** define a saída ou o microfone padrão. O menu de três pontos oferece conectores e balanço estéreo.
+- Nos apps, o seletor escolhe a saída ou a entrada. A estrela salva dispositivo, volume e mudo para quando o app reabrir. **Padrão do sistema** acompanha as mudanças do padrão.
+- A **engrenagem** reúne início com a sessão, amplificação até 150%, regras salvas, cenas e perfis de hardware.
+- Uma cena salva os padrões, volumes, mudo e destinos atuais. Ao aplicar, só altera os dispositivos e apps disponíveis. Não abre apps nem conecta hardware.
+
+Os canais atuais cabem na janela sem rolagem. Novos canais aumentam sua altura, até o espaço disponível no monitor. A rolagem só aparece quando a lista excede fisicamente a altura da tela.
 
 Fechar a janela mantém o Sonora em segundo plano para aplicar regras. Os medidores param enquanto a janela está oculta. Para sair, use **Encerrar** ou `sonora --quit`.
 
@@ -32,7 +33,7 @@ sonora
 
 O ambiente virtual usa os pacotes GTK do Python do sistema. Após uma atualização da versão principal/secundária de Python, recrie `.venv` e rode o instalador novamente.
 
-Preferências e cenas ficam em `~/.config/sonora/preferences.json`. O início automático, quando habilitado, fica em `~/.config/autostart/sonora.desktop`. A instalação não altera configurações do Sussurro, atalhos, PipeWire ou Hyprland.
+Preferências e cenas ficam em `~/.config/sonora/preferences.json`. O início automático, quando habilitado, fica em `~/.config/autostart/sonora.desktop`. No Omarchy, a instalação adiciona `~/.config/hypr/sonora.lua` para abrir o app flutuante, preservando um backup do arquivo principal antes de acrescentar o `require`. Não altera configurações do Sussurro, atalhos ou PipeWire.
 
 ## Desenvolvimento e verificação
 
@@ -54,4 +55,4 @@ agent-bench exec sonora-test -- env GDK_SCALE=1 GDK_DPI_SCALE=1 PULSE_SERVER=uni
 agent-bench stop sonora-test
 ```
 
-O teste dirige os widgets de volume, mudo, rota, preferências, amplificação, cenas, abas e ocultar/reabrir usando canais virtuais silenciosos.
+O teste verifica que todas as linhas estão visíveis sem rolagem, com altura compacta, e dirige volume, mudo, rota, estrela, amplificação, cenas, opções de hardware e ocultar/reabrir usando canais virtuais silenciosos.

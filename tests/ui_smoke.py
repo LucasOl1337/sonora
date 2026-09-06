@@ -30,6 +30,11 @@ def channel():
 
 
 def start():
+    adjustment = app.window.scroll.get_vadjustment()
+    assert adjustment.get_upper() <= adjustment.get_page_size() + 1, (adjustment.get_upper(), adjustment.get_page_size())
+    assert all(w.get_height() <= 48 for w in app.window.channels.values())
+    assert app.window.get_height() <= 650, app.window.get_height()
+    print(f"PASS all {len(app.window.channels)} channels visible without scrolling in {app.window.get_width()}×{app.window.get_height()}", flush=True)
     w = channel()
     w.scale.set_value(42)
 
@@ -52,7 +57,7 @@ def route():
 
 def remember():
     assert app.window.state["rules"]
-    app.window.stack.set_visible_child_name("preferences")
+    app.window.open_settings()
     assert app.window.rules.get_first_child() is not None
     app.window.boost_check.set_active(True)
 
@@ -60,14 +65,12 @@ def remember():
 def boost():
     assert app.window.max_volume == 150
     assert channel().scale.get_adjustment().get_upper() == 150
-    app.window.stack.set_visible_child_name("scenes")
     app.window.scene_name.set_text("Cena de teste")
     app.window.save_scene()
 
 
 def scene():
     assert "Cena de teste" in app.window.state["scenes"]
-    app.window.stack.set_visible_child_name("devices")
     assert app.window.hardware.get_first_child() is not None
     app.window.hide_window()
 
@@ -80,8 +83,7 @@ def hidden():
 
 def reopened():
     assert app.window.is_visible()
-    app.window.stack.set_visible_child_name("mixer")
-    print("PASS GTK slider, mute, route, remember, boost, scenes, hardware tab, hide and reopen", flush=True)
+    print("PASS GTK slider, mute, route, remember, boost, scenes, hardware options, hide and reopen", flush=True)
     app.quit()
 
 
