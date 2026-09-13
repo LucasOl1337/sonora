@@ -1,13 +1,17 @@
 """PipeWire/PulseAudio control and live peaks, confined to one asyncio thread."""
 
 import asyncio
+from array import array
 import copy
 import json
 import logging
+import math
 import os
 from pathlib import Path
+import tempfile
 import threading
 import time
+import wave
 
 from pulsectl_asyncio import PulseAsync
 
@@ -43,6 +47,10 @@ def client_properties(props):
     return props
 
 
+def enum_token(value):
+    return (getattr(value, "name", None) or str(value)).split("=")[-1].strip("<> ").lower()
+
+
 def missing_microphones(cards, sources):
     published = {source.get("card") for source in sources}
     missing = []
@@ -59,6 +67,56 @@ def missing_microphones(cards, sources):
                         "index": card.index, "profile": profile.name,
                         "alsa_card": card.proplist.get("api.alsa.card")})
     return missing
+
+
+def port_product(port):
+    return ((getattr(port, "proplist", None) or {}).get("device.product.name") or "").strip()
+
+
+def port_title(port):
+    return port_product(port) or port.description or port.name
+
+
+def stereo_profile(port):
+    profiles = [p for p in getattr(port, "profile_list", []) or [] if p.available and getattr(p, "n_sinks", 0)]
+    stereo = [p for p in profiles if "stereo" in p.name and "surround" not in p.name]
+    if not stereo and not profiles:
+        return None
+    return max(stereo or profiles, key=lambda p: p.priority)
+
+
+def missing_outputs(cards, sinks):
+    published = {(sink.get("card"), sink.get("port")) for sink in sinks}
+    missing = []
+    for card in cards:
+        for port in getattr(card, "port_list", []) or []:
+            if "output" not in enum_token(getattr(port, "direction", "")):
+                continue
+            if "yes" not in enum_token(getattr(port, "available", "")):
+                continue
+            if (card.index, port.name) in published:
+                continue
+            profile = stereo_profile(port)
+            if profile is None:
+                continue
+            title = port_title(port)
+            missing.append({"key": "missing-out:" + card.name + ":" + port.name, "kind": "missing_sink",
+                            "name": card.name, "port": port.name, "title": title, "index": card.index,
+                            "profile": profile.name})
+    return missing
+
+
+def label_sinks(sinks, cards):
+    products = {}
+    for card in cards:
+        for port in getattr(card, "port_list", []) or []:
+            product = port_product(port)
+            if product:
+                products[(card.index, port.name)] = product
+    for item in sinks:
+        product = products.get((item.get("card"), item.get("port")))
+        if product:
+            item["title"] = product
 
 
 def capture_pid(status):
@@ -118,6 +176,8 @@ class AudioEngine:
         self.meters = {}
         self.seen = set()
         self.transient_routes = {}
+        self.microphone_test_module = None
+        self.microphone_test_source = None
         self.visible = True
         self.running = True
         self.loop = None
@@ -178,6 +238,7 @@ class AudioEngine:
                 await self.clear_meters()
 
     async def clear_meters(self):
+        await self.stop_microphone_test()
         tasks = [entry[1] for entry in self.meters.values()]
         for task in tasks:
             task.cancel()
@@ -185,6 +246,58 @@ class AudioEngine:
             await asyncio.gather(*tasks, return_exceptions=True)
         self.meters.clear()
         self.levels.clear()
+
+    async def stop_microphone_test(self):
+        module = self.microphone_test_module
+        self.microphone_test_module = None
+        self.microphone_test_source = None
+        if module is not None:
+            try:
+                await self.pulse.module_unload(module)
+            except Exception:
+                logging.debug("Microphone test module already gone", exc_info=True)
+
+    async def test_output(self, name):
+        """Play a short calibration tone through one sink."""
+        sink = next(s for s in await self.pulse.sink_list() if s.name == name)
+        fd, filename = tempfile.mkstemp(prefix="sonora-output-test-", suffix=".wav")
+        try:
+            with os.fdopen(fd, "wb") as raw:
+                with wave.open(raw, "wb") as wav:
+                    wav.setparams((1, 2, 48000, 0, "NONE", "not compressed"))
+                    frames = array("h", (
+                        round(7000 * math.sin(i * 2 * math.pi * 440 / 48000))
+                        for i in range(round(48000 * 0.65))
+                    ))
+                    wav.writeframes(frames.tobytes())
+            process = await asyncio.create_subprocess_exec(
+                "paplay", "--device", sink.name, "--client-name", "Sonora - Teste de saída", filename,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await process.communicate()
+            if process.returncode:
+                detail = stderr.decode(errors="replace").strip()
+                raise ValueError(f"Não foi possível tocar o teste de saída{': ' + detail if detail else '.'}")
+        finally:
+            Path(filename).unlink(missing_ok=True)
+
+    async def test_microphone(self, kind, index, enabled):
+        if kind != "source":
+            raise ValueError("O teste só pode ser feito em uma entrada de áudio.")
+        if not enabled:
+            await self.stop_microphone_test()
+            return
+        source = self.item("source", index)
+        server = await self.pulse.server_info()
+        await self.stop_microphone_test()
+        if not server.default_sink_name:
+            raise ValueError("Não há uma saída padrão para ouvir o microfone.")
+        self.microphone_test_module = await self.pulse.module_load(
+            "module-loopback",
+            f"source={source['name']} sink={server.default_sink_name} latency_msec=40 "
+            "source_output_properties=application.name=Sonora",
+        )
+        self.microphone_test_source = source["name"]
 
     async def peak(self, key, source, stream=None):
         try:
@@ -234,6 +347,7 @@ class AudioEngine:
                     "following": key in self.transient_routes and self.transient_routes[key] is None,
                     "ports": [{"name": p.name, "title": p.description, "available": str(p.available)} for p in getattr(obj, "port_list", [])],
                     "port": getattr(getattr(obj, "port_active", None), "name", None),
+                    "nick": props.get("node.nick") or props.get("alsa.name"),
                 }
                 if hasattr(obj, "monitor_source_name"):
                     entry["monitor"] = obj.monitor_source_name
@@ -251,10 +365,13 @@ class AudioEngine:
                             "active": c.profile_active.name if c.profile_active else "",
                             "profiles": [{"name": p.name, "title": p.description} for p in c.profile_list if p.available]} for c in cards]}
         state["missing_sources"] = missing_microphones(cards, groups["source"])
+        state["missing_sinks"] = missing_outputs(cards, groups["sink"])
+        label_sinks(groups["sink"], cards)
         await self.apply_rules(state)
         state["rules"] = copy.deepcopy(self.prefs.data["rules"])
         state["scenes"] = list(self.prefs.data["scenes"])
         state["boost"] = bool(self.prefs.data.get("boost", False))
+        state["microphone_test"] = self.microphone_test_source
         self.state = state
         await self.sync_meters(state)
         self.on_state(state)
@@ -321,6 +438,14 @@ class AudioEngine:
             return
         if action == "visible":
             self.visible = args[0]
+            if not self.visible:
+                await self.stop_microphone_test()
+            return
+        if action == "test_output":
+            await self.test_output(args[0])
+            return
+        if action == "test_microphone":
+            await self.test_microphone(*args)
             return
         if action == "microphone":
             name = args[0]
@@ -352,6 +477,32 @@ class AudioEngine:
             else:
                 source = next(s for s in await self.pulse.source_list() if s.name == name)
             await self.pulse.default_set(source)
+            return
+        if action == "output":
+            name = args[0]
+            if name.startswith("cardport:"):
+                card_name, port_name = name.removeprefix("cardport:").rsplit(":", 1)
+                missing = next(x for x in self.state["missing_sinks"] if x["name"] == card_name and x["port"] == port_name)
+                card = next(c for c in await self.pulse.card_list() if c.name == card_name)
+                original = card.profile_active.name
+                try:
+                    if original != missing["profile"]:
+                        await self.pulse.card_profile_set(card, missing["profile"])
+                    sink = None
+                    for _ in range(30):
+                        sink = next((s for s in await self.pulse.sink_list()
+                                     if s.card == card.index and getattr(s.port_active, "name", None) == port_name), None)
+                        if sink:
+                            break
+                        await asyncio.sleep(.1)
+                    if sink is None:
+                        raise ValueError(f'{missing["title"]} não pôde ser ativado no sistema de áudio.')
+                except Exception:
+                    await self.pulse.card_profile_set(card, original)
+                    raise
+            else:
+                sink = next(s for s in await self.pulse.sink_list() if s.name == name)
+            await self.pulse.default_set(sink)
             return
         if action == "boost":
             self.prefs.data["boost"] = bool(args[0])

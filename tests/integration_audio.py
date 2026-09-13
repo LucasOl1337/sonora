@@ -77,6 +77,15 @@ async def main():
                 current = engine.item("recording", capture["index"])
                 assert current["volume"] == 64 and current["mute"] and current["target"] == mic_b["index"]
                 print("PASS capture volume, mute and microphone move")
+                await engine.execute("test_output", a["name"])
+                print("PASS output test tone")
+                await engine.execute("test_microphone", "source", mic_b["index"], True)
+                await engine.refresh()
+                assert engine.state["microphone_test"] == mic_b["name"]
+                await engine.execute("test_microphone", "source", mic_b["index"], False)
+                await engine.refresh()
+                assert engine.state["microphone_test"] is None
+                print("PASS microphone monitor toggle")
                 await engine.execute("remember", "playback", strong["index"], True)
                 saved = Preferences(folder / "prefs.json")
                 assert saved.data["rules"]
