@@ -11,7 +11,8 @@ import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pulsectl
-from app import Sonora, GLib
+from app import COMPACT_WIDTH, WINDOW_MIN_WIDTH, Sonora, GLib
+from gi.repository import Gtk
 from audio import Preferences
 
 folder = tempfile.TemporaryDirectory(prefix="sonora-ui-")
@@ -31,10 +32,25 @@ def channel():
 
 def start():
     assert {s["name"] for s in app.window.state["source"]} <= set(app.window.microphone.values)
+    assert {s["name"] for s in app.window.state["sink"]} <= set(app.window.output.values)
+    output_rows = [w for w in app.window.channels.values() if w.item["kind"] == "sink"]
+    source_rows = [w for w in app.window.channels.values() if w.item["kind"] == "source"]
+    assert output_rows and all(w.test_btn.get_label() == "Testar" for w in output_rows)
+    assert source_rows and all(w.test_btn.get_label() == "Ouvir" for w in source_rows)
     adjustment = app.window.scroll.get_vadjustment()
     assert adjustment.get_upper() <= adjustment.get_page_size() + 1, (adjustment.get_upper(), adjustment.get_page_size())
     assert all(w.get_height() <= 48 for w in app.window.channels.values())
-    assert app.window.get_height() <= 650, app.window.get_height()
+    assert app.window.get_height() <= 680, app.window.get_height()
+    device = output_rows[0]
+    wide_min = device.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
+    assert wide_min <= 640, wide_min
+    app.window.adapt_to_width(COMPACT_WIDTH - 1)
+    assert app.window.compact
+    assert device.inline_actions.get_parent() is device.advanced
+    compact_min = device.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
+    assert compact_min <= WINDOW_MIN_WIDTH, compact_min
+    app.window.adapt_to_width(max(app.window.body.get_width(), COMPACT_WIDTH + 80))
+    assert not app.window.compact
     print(f"PASS all {len(app.window.channels)} channels visible without scrolling in {app.window.get_width()}×{app.window.get_height()}", flush=True)
     w = channel()
     w.scale.set_value(42)

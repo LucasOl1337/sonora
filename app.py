@@ -20,6 +20,19 @@ from audio import AudioEngine
 
 ROOT = Path(__file__).resolve().parent
 AUTOSTART = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "autostart" / "sonora.desktop"
+COMPACT_WIDTH = 560
+WINDOW_MIN_WIDTH = 360
+WINDOW_DEFAULT_WIDTH = 840
+
+
+def reparent(widget, parent, after=None):
+    current = widget.get_parent()
+    if current is parent:
+        parent.reorder_child_after(widget, after)
+        return
+    if current is not None:
+        current.remove(widget)
+    parent.insert_child_after(widget, after)
 
 
 def box(vertical=False, spacing=10, css=None):
@@ -64,6 +77,7 @@ class Choice(Gtk.DropDown):
         self.callback = callback
         self.set_tooltip_text(tooltip)
         self.set_hexpand(True)
+        self.set_size_request(72, -1)
         self.set_enable_search(True)
         factory = Gtk.SignalListItemFactory()
         factory.connect("setup", self.setup_label)
@@ -73,7 +87,7 @@ class Choice(Gtk.DropDown):
 
     def setup_label(self, _, item):
         text = label()
-        text.set_max_width_chars(18)
+        text.set_max_width_chars(12)
         item.set_child(text)
 
     def update(self, options, selected):
@@ -98,7 +112,8 @@ class Meter(Gtk.DrawingArea):
         self.engine, self.key = engine, None
         self.display = 0.0
         self.muted = False
-        self.set_content_width(100)
+        self.set_hexpand(True)
+        self.set_content_width(40)
         self.set_content_height(3)
         self.set_draw_func(self.draw)
         self.set_tooltip_text("Nível real do áudio, de −60 a 0 dBFS")
@@ -113,6 +128,72 @@ class Meter(Gtk.DrawingArea):
         ctx.set_source_rgb(*( (0.96, 0.28, 0.25) if self.display > 0.97 else (0.95, 0.39, 0.16)))
         ctx.rectangle(0, 0, width * self.display, height)
         ctx.fill()
+
+
+class Wave(Gtk.DrawingArea):
+    """Monitor da saída padrão que ocupa a sobra vertical da tile.
+
+    Altura mínima zero: em janela flutuante compacta ele desaparece; num
+    mosaico alto ele estica e transforma o espaço vago em algo útil — o
+    histórico dos últimos segundos de áudio, estilo gráfico de atividade.
+    """
+
+    def __init__(self, engine):
+        super().__init__()
+        self.engine = engine
+        self.key = None
+        self.history = [0.0] * 240
+        self.set_hexpand(True)
+        self.set_vexpand(True)
+        self.set_draw_func(self.draw)
+        self.set_tooltip_text("Atividade da saída padrão — últimos segundos, de −60 a 0 dBFS")
+
+    def push(self):
+        sample, timestamp = self.engine.levels.get(self.key, (0, 0))
+        fresh = time.monotonic() - timestamp < 0.3
+        value = max(0.0, (20 * math.log10(max(sample, 0.001)) + 60) / 60) if fresh else 0.0
+        self.history.append(value)
+        del self.history[0]
+        if self.get_height() >= 26:
+            self.queue_draw()
+
+    def draw(self, _, ctx, width, height):
+        if height < 26 or width < 40:
+            return
+        top, bottom = 8, height - 6
+        span = bottom - top
+        # Linhas de referência em −20 e −40 dBFS, discretas como os separadores.
+        ctx.set_source_rgb(0.15, 0.153, 0.18)
+        ctx.set_line_width(1)
+        for fraction in (1 / 3, 2 / 3):
+            y = round(bottom - span * fraction) + 0.5
+            ctx.move_to(8, y)
+            ctx.line_to(width - 8, y)
+            ctx.stroke()
+        points = [(8 + (width - 16) * i / (len(self.history) - 1), bottom - span * v) for i, v in enumerate(self.history)]
+        ctx.move_to(8, bottom)
+        for x, y in points:
+            ctx.line_to(x, y)
+        ctx.line_to(width - 8, bottom)
+        ctx.close_path()
+        ctx.set_source_rgba(0.94, 0.31, 0.04, 0.18)
+        ctx.fill()
+        ctx.move_to(*points[0])
+        for x, y in points[1:]:
+            ctx.line_to(x, y)
+        ctx.set_source_rgb(0.94, 0.36, 0.10)
+        ctx.set_line_width(1.4)
+        ctx.stroke()
+        ctx.set_source_rgb(0.23, 0.235, 0.27)
+        ctx.move_to(8, bottom + 0.5)
+        ctx.line_to(width - 8, bottom + 0.5)
+        ctx.set_line_width(1)
+        ctx.stroke()
+        if height >= 80:
+            ctx.set_source_rgb(0.42, 0.44, 0.47)
+            ctx.set_font_size(10)
+            ctx.move_to(10, top + 12)
+            ctx.show_text("atividade da saída padrão")
 
 
 def short_device(name):
@@ -137,8 +218,10 @@ class Channel(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.add_css_class("channel")
         self.set_valign(Gtk.Align.START)
+        self.set_hexpand(True)
         self.window, self.item = window, item
         self.updating = False
+        self.compact = False
         self.edit_until = 0
         self.pending = None
         self.volume_timer = None
@@ -150,15 +233,17 @@ class Channel(Gtk.Box):
         self.icon.set_tooltip_text("Entrada de áudio" if is_input else "Saída de áudio")
         self.append(self.icon)
         self.title = label("", "channel-name", True)
-        self.title.set_size_request(180, -1)
-        self.title.set_max_width_chars(24)
+        self.title.set_size_request(64, -1)
+        self.title.set_max_width_chars(18)
+        window.col_title.add_widget(self.title)
         self.append(self.title)
         self.mute = icon_button("audio-volume-high-symbolic", "Silenciar " + item["title"], toggle=True)
         self.mute.connect("toggled", self.on_mute)
         self.append(self.mute)
         levels = box(True, 0)
         levels.set_valign(Gtk.Align.CENTER)
-        levels.set_size_request(136, -1)
+        levels.set_hexpand(True)
+        levels.set_size_request(64, -1)
         self.scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, window.max_volume, 1)
         self.scale.set_draw_value(False)
         self.scale.set_hexpand(True)
@@ -171,53 +256,83 @@ class Channel(Gtk.Box):
         self.append(levels)
         self.readout = label("", "mono small")
         self.readout.set_xalign(1)
-        self.readout.set_size_request(40, -1)
+        self.readout.set_width_chars(4)
         self.append(self.readout)
         self.route = None
         self.remember = None
         self.default_btn = None
+        self.test_btn = None
+        self.inline_actions = None
+        self.advanced = None
+        self.route_box = None
+        self.output_test_timer = None
+        self.more = Gtk.MenuButton(icon_name="view-more-symbolic")
+        self.more.add_css_class("icon-button")
+        popover = Gtk.Popover()
+        extra = box(True, 10)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(extra, "set_margin_" + side)(8)
+        extra.append(label(item["title"], "channel-name"))
+        self.popover_title = extra.get_last_child()
+        popover.set_child(extra)
+        self.more.set_popover(popover)
         if self.device:
-            destination = box(spacing=8)
-            destination.set_size_request(174, -1)
-            destination.set_valign(Gtk.Align.CENTER)
-            self.default_btn = button("Usar", lambda: self.send("default"))
-            self.default_btn.set_size_request(62, -1)
-            self.default_btn.set_tooltip_text("Usar como microfone padrão" if is_input else "Usar como saída padrão")
-            destination.append(self.default_btn)
+            # Trilho direito: legenda de uso à esquerda, botões colados à direita.
+            # O SizeGroup do Window iguala a largura deste trilho em todas as
+            # linhas, então Testar/Usar/⋮ formam colunas de verdade.
+            self.inline_actions = box(spacing=8)
+            self.inline_actions.set_valign(Gtk.Align.CENTER)
+            # hexpand explícito: impede o activity de propagar expansão e
+            # desalinhar o trilho em relação às linhas de aplicativos.
+            self.inline_actions.set_hexpand(False)
             self.activity = label("", "muted small")
-            destination.append(self.activity)
-            self.append(destination)
-            self.more = Gtk.MenuButton(icon_name="view-more-symbolic")
-            self.more.add_css_class("icon-button")
+            self.activity.set_ellipsize(Pango.EllipsizeMode.END)
+            self.activity.set_max_width_chars(10)
+            self.activity.set_xalign(1)
+            self.activity.set_hexpand(True)
+            self.inline_actions.append(self.activity)
+            if is_input:
+                self.test_btn = Gtk.ToggleButton(label="Ouvir")
+                self.test_btn.set_tooltip_text("Ouvir o microfone na saída padrão")
+                self.test_btn.connect("toggled", self.on_microphone_test)
+            else:
+                self.test_btn = button("Testar", self.on_output_test)
+                self.test_btn.set_tooltip_text("Tocar um som de teste nesta saída")
+            self.test_btn.add_css_class("row-action")
+            self.inline_actions.append(self.test_btn)
+            self.default_btn = button("Usar", lambda: self.send("default"), "row-action")
+            self.default_btn.set_tooltip_text("Usar como microfone padrão" if is_input else "Usar como saída padrão")
+            self.inline_actions.append(self.default_btn)
+            window.col_end.add_widget(self.inline_actions)
+            self.append(self.inline_actions)
             self.more.set_tooltip_text("Conectores e balanço")
-            self.device_popover = Gtk.Popover()
-            advanced = box(True, 10)
-            for side in ("top", "bottom", "start", "end"):
-                getattr(advanced, "set_margin_" + side)(8)
-            advanced.append(label(item["title"], "channel-name"))
+            self.advanced = extra
             self.ports = Choice(lambda name: self.send("port", name), "Conector do dispositivo")
-            advanced.append(self.ports)
+            extra.append(self.ports)
             if item["channels"] == 2:
-                advanced.append(label("Balanço esquerdo / direito", "small muted"))
+                extra.append(label("Balanço esquerdo / direito", "small muted"))
                 balance = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, -1, 1, 0.05)
-                balance.set_size_request(220, -1)
+                balance.set_hexpand(True)
                 balance.set_draw_value(False)
                 balance.add_mark(0, Gtk.PositionType.BOTTOM, "Centro")
                 balance.connect("value-changed", lambda w: self.send("balance", w.get_value()))
-                advanced.append(balance)
-            self.device_popover.set_child(advanced)
-            self.more.set_popover(self.device_popover)
-            self.append(self.more)
+                extra.append(balance)
         else:
             self.route = Choice(lambda name: self.send("route", name), "Microfone deste app" if is_input else "Saída deste app")
             self.route.set_hexpand(False)
-            self.route.set_size_request(174, -1)
             self.route.set_valign(Gtk.Align.CENTER)
+            window.col_end.add_widget(self.route)
             self.append(self.route)
             self.remember = icon_button("non-starred-symbolic", "Lembrar dispositivo, volume e mudo para este app", toggle=True)
             self.remember.connect("toggled", self.on_remember)
             self.append(self.remember)
+            self.more.set_tooltip_text("Destino deste aplicativo")
+            self.more.set_visible(False)
+            extra.append(label("Destino", "small muted"))
+            self.route_box = extra
+        self.append(self.more)
         self.update(item, window.state)
+        self.set_compact(window.compact)
 
     def send(self, action, *args):
         self.window.engine.command(action, self.item["kind"], self.item["index"], *args)
@@ -244,6 +359,58 @@ class Channel(Gtk.Box):
         if not self.updating:
             self.send("remember", self.remember.get_active())
 
+    def on_output_test(self):
+        if self.output_test_timer:
+            return
+        self.test_btn.set_label("Tocando…")
+        self.test_btn.set_sensitive(False)
+        self.window.engine.command("test_output", self.item["name"])
+        self.output_test_timer = GLib.timeout_add(900, self.finish_output_test)
+
+    def finish_output_test(self):
+        self.output_test_timer = None
+        if self.test_btn:
+            self.test_btn.set_label("Testar")
+            self.test_btn.set_sensitive(True)
+        return False
+
+    def on_microphone_test(self, *_):
+        if self.updating:
+            return
+        active = self.test_btn.get_active()
+        self.test_btn.set_label("Parar" if active else "Ouvir")
+        self.window.engine.command("test_microphone", self.item["kind"], self.item["index"], active)
+
+    def set_compact(self, compact):
+        compact = bool(compact)
+        if compact == self.compact:
+            return
+        self.compact = compact
+        if self.device:
+            if compact:
+                self.window.col_end.remove_widget(self.inline_actions)
+                reparent(self.inline_actions, self.advanced, self.popover_title)
+                self.inline_actions.set_hexpand(True)
+                self.more.set_sensitive(True)
+                self.more.set_tooltip_text("Teste, destino, conectores e balanço")
+            else:
+                reparent(self.inline_actions, self, self.readout)
+                self.inline_actions.set_hexpand(False)
+                self.window.col_end.add_widget(self.inline_actions)
+                self.more.set_tooltip_text("Conectores e balanço")
+                self.more.set_sensitive(self.item["channels"] == 2 or bool(self.item["ports"]))
+            return
+        if compact:
+            self.window.col_end.remove_widget(self.route)
+            reparent(self.route, self.route_box, self.route_box.get_last_child())
+            self.route.set_hexpand(True)
+            self.more.set_visible(True)
+        else:
+            reparent(self.route, self, self.readout)
+            self.route.set_hexpand(False)
+            self.window.col_end.add_widget(self.route)
+            self.more.set_visible(False)
+
     def update(self, item, state):
         self.updating = True
         self.item = item
@@ -261,6 +428,11 @@ class Channel(Gtk.Box):
         self.mute.set_icon_name(("microphone-disabled-symbolic" if is_input else "audio-volume-muted-symbolic") if item["mute"] else ("microphone-sensitivity-high-symbolic" if is_input else "audio-volume-high-symbolic"))
         self.mute.set_tooltip_text(("Reativar " if item["mute"] else "Silenciar ") + title)
         self.meter.muted = item["mute"]
+        if self.test_btn and self.device:
+            if is_input:
+                monitoring = state.get("microphone_test") == item["name"]
+                self.test_btn.set_active(monitoring)
+                self.test_btn.set_label("Parar" if monitoring else "Ouvir")
         if item["kind"] == "recording":
             self.meter.key = f'source:{item["target"]}'
             self.meter.set_tooltip_text("Nível do microfone usado por este app")
@@ -286,25 +458,49 @@ class Channel(Gtk.Box):
             self.activity.set_tooltip_text(f"Captura direta por {owner}" if owner else "Aplicativos usando este dispositivo")
             self.ports.update([(p["name"], p["title"]) for p in item["ports"]], item["port"])
             self.ports.set_visible(bool(item["ports"]))
-            self.more.set_sensitive(item["channels"] == 2 or bool(item["ports"]))
+            self.more.set_sensitive(self.compact or item["channels"] == 2 or bool(item["ports"]))
         self.updating = False
 
 
-class MissingMicrophone(Gtk.Box):
+class MissingDevice(Gtk.Box):
     def __init__(self, window, item):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.add_css_class("channel")
+        self.set_hexpand(True)
         self.device = True
         self.volume_timer = None
         self.meter = None
         self.item = item
-        icon = Gtk.Image.new_from_icon_name("audio-input-microphone-symbolic")
+        output = item["kind"] == "missing_sink"
+        icon = Gtk.Image.new_from_icon_name("audio-speakers-symbolic" if output else "audio-input-microphone-symbolic")
         icon.set_pixel_size(16)
+        icon.set_size_request(18, -1)
+        icon.set_tooltip_text("Saída de áudio" if output else "Entrada de áudio")
         self.append(icon)
         self.title = label(item["title"], "channel-name", True)
+        window.col_title.add_widget(self.title)
         self.append(self.title)
-        self.append(label("Não publicado no sistema de áudio", "small muted"))
-        self.append(button("Ativar", lambda: window.engine.command("microphone", "card:" + self.item["name"])))
+        status = label("Conectado, sem perfil publicado", "small muted")
+        status.set_hexpand(True)
+        status.set_max_width_chars(22)
+        self.append(status)
+        action = ("output", "cardport:" + item["name"] + ":" + item["port"]) if output else ("microphone", "card:" + item["name"])
+        rail = box()
+        rail.set_valign(Gtk.Align.CENTER)
+        rail.set_hexpand(False)
+        activate = button("Ativar", lambda action=action: window.engine.command(*action), "row-action")
+        activate.set_hexpand(True)
+        activate.set_halign(Gtk.Align.END)
+        rail.append(activate)
+        window.col_end.add_widget(rail)
+        self.append(rail)
+        # Reserva a coluna do ⋮ para o botão Ativar alinhar com as outras linhas.
+        spacer = box()
+        spacer.set_size_request(26, -1)
+        self.append(spacer)
+
+    def set_compact(self, compact):
+        return
 
     def update(self, item, state):
         self.item = item
@@ -314,13 +510,20 @@ class MissingMicrophone(Gtk.Box):
 class Window(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Sonora")
-        self.set_default_size(780, -1)
+        self.set_default_size(WINDOW_DEFAULT_WIDTH, -1)
+        self.set_size_request(WINDOW_MIN_WIDTH, -1)
+        self.set_resizable(True)
         self.app, self.engine = app, app.engine
         self.state = {}
         self.max_volume = 100
         self.channels = {}
         self.signature = None
         self.settings_window = None
+        self.compact = False
+        # Colunas compartilhadas: mesmas larguras de título e do trilho direito
+        # em todas as linhas, para botões e seletores alinharem verticalmente.
+        self.col_title = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL)
+        self.col_end = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL)
         self.connect("close-request", self.hide_window)
         header = Gtk.HeaderBar()
         header.set_decoration_layout(":close")
@@ -328,19 +531,25 @@ class Window(Gtk.ApplicationWindow):
         icon = Gtk.Image.new_from_file(str(ROOT / "assets" / "sonora.svg"))
         icon.set_pixel_size(21)
         title.append(icon)
-        title.append(label("SONORA", "brand"))
+        brand = label("SONORA", "brand")
+        brand.set_ellipsize(Pango.EllipsizeMode.NONE)
+        title.append(brand)
+        self.connection = label("●", "online")
+        self.connection.set_tooltip_text("Conectado ao servidor de áudio")
+        title.append(self.connection)
         header.set_title_widget(title)
         header.pack_end(icon_button("emblem-system-symbolic", "Opções do Sonora", self.open_settings))
+        header.pack_end(button("Encerrar", app.quit, "flat"))
         self.set_titlebar(header)
         root = box(True, 8)
         self.root = root
-        root.set_valign(Gtk.Align.START)
+        root.set_valign(Gtk.Align.FILL)
+        root.set_vexpand(True)
+        root.set_hexpand(True)
+        root.set_halign(Gtk.Align.FILL)
         for side in ("top", "bottom", "start", "end"):
             getattr(root, "set_margin_" + side)(12)
-        # Center the natural-width list if the user expands the window.
-        centered = Gtk.CenterBox()
-        centered.set_center_widget(root)
-        self.set_child(centered)
+        self.set_child(root)
         self.error = box(spacing=6, css="error")
         self.error_label = label("", expand=True)
         self.error_label.set_wrap(True)
@@ -351,37 +560,59 @@ class Window(Gtk.ApplicationWindow):
         self.scroll = Gtk.ScrolledWindow()
         self.scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.scroll.set_propagate_natural_height(True)
+        self.scroll.set_hexpand(True)
+        self.scroll.set_vexpand(True)
+        self.scroll.set_halign(Gtk.Align.FILL)
         monitor = Gdk.Display.get_default().get_monitors().get_item(0)
         self.scroll.set_max_content_height(max(260, monitor.get_geometry().height - 160))
         self.body = box(True, 6)
+        self.body.set_hexpand(True)
         self.scroll.set_child(self.body)
         root.append(self.scroll)
-        devices_heading = box(spacing=8)
-        devices_heading.append(label("DISPOSITIVOS", "section-label", True))
-        devices_heading.append(label("Microfone padrão", "small muted"))
+        # Barra de padrões do sistema: duas metades iguais, rótulo + seletor.
+        defaults = box(spacing=12, css="defaults-bar")
+        defaults.set_homogeneous(True)
+        output_half = box(spacing=8)
+        self.output_caption = label("Saída padrão", "small muted")
+        output_half.append(self.output_caption)
+        self.output = Choice(lambda name: self.engine.command("output", name), "Escolher a saída de som padrão")
+        output_half.append(self.output)
+        defaults.append(output_half)
+        microphone_half = box(spacing=8)
+        self.microphone_caption = label("Microfone padrão", "small muted")
+        microphone_half.append(self.microphone_caption)
         self.microphone = Choice(lambda name: self.engine.command("microphone", name), "Escolher o microfone padrão")
-        self.microphone.set_hexpand(False)
-        self.microphone.set_size_request(200, -1)
-        devices_heading.append(self.microphone)
+        microphone_half.append(self.microphone)
+        defaults.append(microphone_half)
+        self.body.append(defaults)
+        devices_heading = box(spacing=8)
+        devices_heading.set_margin_top(4)
+        devices_heading.append(label("DISPOSITIVOS", "section-label", True))
         self.body.append(devices_heading)
         self.devices = box(True, 0, "channel-list")
+        self.devices.set_hexpand(True)
         self.body.append(self.devices)
         heading = box(spacing=8)
-        heading.set_margin_top(8)
+        heading.set_margin_top(10)
         heading.append(label("APLICATIVOS", "section-label", True))
-        heading.append(label("alto-falante: saída · microfone: entrada", "muted small"))
+        self.apps_hint = label("alto-falante: saída · microfone: entrada", "muted small")
+        heading.append(self.apps_hint)
         self.body.append(heading)
+        # O cartão de apps absorve a altura extra da tile: a sobra vira espaço
+        # da lista dinâmica, não um vazio de fundo cru abaixo do conteúdo.
         self.apps = box(True, 0, "channel-list")
+        self.apps.set_hexpand(True)
+        self.apps.set_vexpand(True)
         self.body.append(self.apps)
         self.empty = label("Nenhum aplicativo com áudio aberto.", "empty muted")
-        self.body.append(self.empty)
-        footer = box(spacing=8)
-        self.status = label("Conectando…", "small muted", True)
-        footer.append(self.status)
-        self.connection = label("●", "online")
-        footer.append(self.connection)
-        footer.append(button("Encerrar", app.quit, "flat"))
-        root.append(footer)
+        self.empty.set_xalign(0.5)
+        self.empty.set_halign(Gtk.Align.CENTER)
+        self.empty.set_valign(Gtk.Align.CENTER)
+        self.empty.set_vexpand(True)
+        self.apps.append(self.empty)
+        # A sobra vertical do mosaico vira o monitor de atividade da saída.
+        self.wave = Wave(self.engine)
+        self.apps.append(self.wave)
         GLib.timeout_add(33, self.tick)
 
     def open_settings(self):
@@ -404,7 +635,7 @@ class Window(Gtk.ApplicationWindow):
             self.boost_check.set_active(self.state.get("boost", False))
             self.boost_check.connect("toggled", self.boost)
             content.append(self.boost_check)
-            text = label("Fechar a janela mantém as regras em segundo plano.\nUse Encerrar para sair. A estrela salva as preferências de um app.", "small muted")
+            text = label("Fechar a janela mantém as regras em segundo plano.\nUse Encerrar no cabeçalho ou sonora --quit para sair. A estrela salva as preferências de um app.", "small muted")
             text.set_wrap(True)
             content.append(text)
             scenes = box(True, 8)
@@ -463,15 +694,17 @@ class Window(Gtk.ApplicationWindow):
     def update(self, state):
         self.state = state
         connected = state.get("connected", False)
-        self.connection.set_text("●" if connected else "Reconectando…")
+        self.connection.set_text("●" if connected else "○")
+        self.connection.set_tooltip_text("Conectado ao servidor de áudio" if connected else "Reconectando…")
         self.body.set_sensitive(connected)
         if not connected:
             return False
         self.max_volume = 150 if state["boost"] else 100
         if self.settings_window:
             self.boost_check.set_active(state["boost"])
+        self.output.update([(s["name"], short_device(s["title"])) for s in state.get("sink", [])] + [("cardport:" + s["name"] + ":" + s["port"], short_device(s["title"]) + " · ativar") for s in state.get("missing_sinks", [])], state["defaults"]["sink"])
         self.microphone.update([(s["name"], short_device(s["title"])) for s in state["source"]] + [("card:" + s["name"], short_device(s["title"]) + " · ativar") for s in state["missing_sources"]], state["defaults"]["source"])
-        items = state["sink"] + state["source"] + state["missing_sources"] + state["playback"] + state["recording"]
+        items = state["sink"] + state.get("missing_sinks", []) + state["source"] + state["missing_sources"] + state["playback"] + state["recording"]
         keys = {item["key"] for item in items}
         structure_changed = keys != set(self.channels)
         for key in list(self.channels):
@@ -482,7 +715,7 @@ class Window(Gtk.ApplicationWindow):
                 channel.get_parent().remove(channel)
         for item in items:
             if item["key"] not in self.channels:
-                channel = MissingMicrophone(self, item) if item["kind"] == "missing" else Channel(self, item)
+                channel = MissingDevice(self, item) if item["kind"] in ("missing", "missing_sink") else Channel(self, item)
                 self.channels[item["key"]] = channel
                 (self.devices if channel.device else self.apps).append(channel)
             else:
@@ -494,8 +727,7 @@ class Window(Gtk.ApplicationWindow):
             container.reorder_child_after(channel, previous[channel.device])
             previous[channel.device] = channel
         self.empty.set_visible(not state["playback"] and not state["recording"])
-        count = len(state["playback"]) + len(state["recording"])
-        self.status.set_text(f'{len(state["sink"])} saídas · {len(state["source"])} entradas · {count} canais de apps')
+        self.wave.key = next((d["key"] for d in state["sink"] if d.get("default")), None)
         signature = json.dumps([state["rules"], state["scenes"], state["cards"], [(d["name"], d["title"]) for d in state["sink"] + state["source"]]], sort_keys=True)
         if signature != self.signature:
             self.signature = signature
@@ -505,10 +737,28 @@ class Window(Gtk.ApplicationWindow):
         return False
 
     def fit_to_content(self):
+        # Ajuste puro GTK: garante que a lista caiba quando canais aparecem
+        # com a janela já mapeada. No mosaico o compositor manda no tamanho;
+        # aqui ninguém fala com o Hyprland.
         natural_height = self.body.measure(Gtk.Orientation.VERTICAL, max(1, self.body.get_width()))[1]
         self.scroll.set_min_content_height(min(natural_height, self.scroll.get_max_content_height()))
-        self.set_default_size(780, -1)
+        self.set_default_size(WINDOW_DEFAULT_WIDTH, -1)
         return False
+
+    def adapt_to_width(self, width):
+        compact = width < COMPACT_WIDTH
+        if compact == self.compact:
+            return
+        self.compact = compact
+        if compact:
+            self.add_css_class("compact")
+        else:
+            self.remove_css_class("compact")
+        self.output_caption.set_visible(not compact)
+        self.microphone_caption.set_visible(not compact)
+        self.apps_hint.set_visible(not compact)
+        for channel in self.channels.values():
+            channel.set_compact(compact)
 
     def update_saved(self):
         if self.settings_window is None or not self.state.get("connected"):
@@ -547,9 +797,14 @@ class Window(Gtk.ApplicationWindow):
 
     def tick(self):
         if self.is_visible():
+            width = self.get_width()
+            if width > 1:
+                self.adapt_to_width(width)
             for channel in self.channels.values():
                 if channel.get_mapped() and channel.meter:
                     channel.meter.queue_draw()
+            if self.wave.get_mapped():
+                self.wave.push()
         return True
 
 
