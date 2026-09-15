@@ -619,6 +619,10 @@ class Window(Gtk.ApplicationWindow):
         if self.settings_window is None:
             self.settings_window = Gtk.Window(title="Opções do Sonora", transient_for=self, destroy_with_parent=True)
             self.settings_window.set_default_size(480, 430)
+            settings_header = Gtk.HeaderBar()
+            settings_header.set_decoration_layout(":close")
+            settings_header.set_title_widget(label("Opções", "channel-name"))
+            self.settings_window.set_titlebar(settings_header)
             self.settings_window.connect("close-request", lambda w: (w.set_visible(False), True)[1])
             content = box(True, 12)
             for side in ("top", "bottom", "start", "end"):
