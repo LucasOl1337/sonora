@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sonora, mixer compacto para Omarchy e PipeWire</title>
+<meta name="description" content="Mixer nativo para PipeWire no Omarchy. Dispositivos e aplicativos numa lista só, paleta grafite e laranja, sem mandar no Hyprland. Grátis, open source, MIT.">
+<meta property="og:title" content="Sonora: o mixer que cabe no mosaico">
+<meta property="og:description" content="Volume, microfone e destino de cada app numa lista só. Não flutua, não se redimensiona, não fala com o compositor.">
+<meta property="og:image" content="media/poster.jpg">
+<meta property="og:type" content="website">
+<link rel="icon" href="media/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@600;700&family=Noto+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#131417;--sf:#1b1c21;--sf2:#25262b;--sf3:#2f3036;--bd:#2b2c33;--bds:#454750;
+  --ink:#f2f3f4;--ink2:#c3c6c8;--ink3:#9aa0a6;--acc:#f0500a;--acch:#d64708;--acct:#f07944;--gra:#16181a;
+  --max:1120px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans","Segoe UI",system-ui,sans-serif;font-size:17px;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:var(--acct);text-decoration:none}a:hover{text-decoration:underline}
+.wrap{max-width:var(--max);margin:0 auto;padding:0 24px}
+code,.mono{font-family:"JetBrains Mono",ui-monospace,Menlo,monospace}
+
+.nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0}
+.brand{display:flex;align-items:center;gap:12px;font-family:"Archivo Narrow","Nimbus Sans Narrow",sans-serif;font-weight:700;letter-spacing:.22em;font-size:18px;color:var(--ink)}
+.brand img{width:34px;height:34px;border-radius:9px}
+.nav .links{display:flex;gap:22px;font-size:14px}
+.nav .links a{color:var(--ink3)}.nav .links a:hover{color:var(--ink);text-decoration:none}
+.btn{display:inline-flex;align-items:center;gap:10px;padding:13px 22px;border-radius:12px;font-weight:600;font-size:15px;border:1px solid transparent;transition:.15s}
+.btn.acc{background:var(--acc);color:var(--gra)}.btn.acc:hover{background:var(--acch);text-decoration:none}
+.btn.ghost{border-color:var(--bds);color:var(--ink2)}.btn.ghost:hover{background:var(--sf2);text-decoration:none;color:var(--ink)}
+
+.hero{padding:70px 0 40px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
+.k{font-size:13px;letter-spacing:.26em;font-weight:600;color:var(--ink3);text-transform:uppercase;margin:0 0 18px}
+h1{font-size:clamp(40px,5.8vw,72px);line-height:1.02;letter-spacing:-.025em;margin:0 0 22px;font-weight:800}
+h1 b{color:var(--acc);font-weight:800}
+.lead{font-size:20px;color:var(--ink2);max-width:520px;margin:0 0 30px}
+.cta{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.cta small{color:var(--ink3);font-size:13px;width:100%;margin-top:4px}
+.video{position:relative;border-radius:16px;overflow:hidden;background:#000;border:1px solid var(--bd);box-shadow:0 30px 80px rgba(0,0,0,.45)}
+.video video{display:block;width:100%;height:auto}
+.vcap{color:var(--ink3);font-size:13.5px;margin:10px 0 0}
+
+.pillars{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:56px 0 0}
+.card{background:var(--sf);border:1px solid var(--bd);border-radius:16px;padding:26px 26px 24px}
+.card h3{margin:14px 0 8px;font-size:20px;letter-spacing:-.01em}
+.card p{margin:0;color:var(--ink3);font-size:15.5px}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--acc);box-shadow:0 0 0 8px rgba(240,80,10,.14)}
+
+section{padding:84px 0 0}
+h2{font-size:clamp(30px,4vw,44px);line-height:1.08;letter-spacing:-.02em;margin:0 0 14px;font-weight:800}
+.sub{color:var(--ink3);font-size:18px;max-width:640px;margin:0 0 34px}
+.feat{display:grid;grid-template-columns:1fr 1fr;gap:44px;align-items:center;margin-top:40px}
+.feat.rev .shot{order:-1}
+.feat h3{font-size:26px;letter-spacing:-.015em;margin:0 0 10px}
+.feat p{color:var(--ink2);margin:0 0 12px}
+.feat ul{margin:12px 0 0;padding-left:18px;color:var(--ink2)}
+.feat li{margin:6px 0}
+.shot{border-radius:14px;overflow:hidden;border:1px solid var(--bd);background:var(--sf);box-shadow:0 24px 60px rgba(0,0,0,.4)}
+.shot img{display:block;width:100%;height:auto}
+.shot.narrow{max-width:360px;margin:0 auto}
+
+.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:36px}
+.step{background:var(--sf);border:1px solid var(--bd);border-radius:14px;padding:22px}
+.step .n{font-family:"JetBrains Mono",monospace;color:var(--acct);font-size:13px;margin-bottom:10px}
+.step h4{margin:0 0 6px;font-size:17px}.step p{margin:0;color:var(--ink3);font-size:14.5px}
+
+.nums{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:36px}
+.num{background:var(--sf2);border-radius:14px;padding:22px}
+.num b{display:block;font-size:34px;letter-spacing:-.02em;font-weight:800}
+.num span{color:var(--ink3);font-size:14px}
+
+table{width:100%;border-collapse:collapse;margin-top:34px;background:var(--sf);border:1px solid var(--bd);border-radius:16px;overflow:hidden}
+th,td{padding:15px 18px;text-align:left;border-bottom:1px solid var(--bd);font-size:15.5px;vertical-align:top}
+th{color:var(--ink3);font-weight:600;font-size:13px;letter-spacing:.14em;text-transform:uppercase;background:var(--sf2)}
+tr:last-child td{border-bottom:0}
+td.y{color:var(--ink)}td.n{color:var(--ink3)}
+td:first-child{color:var(--ink2);width:28%}
+.foot-note{color:var(--ink3);font-size:13.5px;margin-top:12px}
+
+pre{background:var(--sf);border:1px solid var(--bd);border-radius:14px;padding:20px 22px;overflow:auto;font-size:14px;line-height:1.6;color:var(--ink2);margin:0}
+pre .c{color:var(--ink3)}pre .a{color:var(--acct)}
+
+footer{margin-top:96px;padding:40px 0 60px;border-top:1px solid var(--bd);color:var(--ink3);font-size:14px;display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+.reveal{opacity:0;transform:translateY(14px);transition:opacity .6s ease,transform .6s ease}
+.reveal.in{opacity:1;transform:none}
+
+@media (max-width:900px){
+  .hero{grid-template-columns:1fr;padding-top:36px}
+  .pillars,.flow,.nums{grid-template-columns:1fr 1fr}
+  .feat{grid-template-columns:1fr}.feat.rev .shot{order:0}
+  .nav .links{display:none}
+}
+@media (max-width:560px){.pillars,.flow,.nums{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="nav">
+    <a class="brand" href="#"><img src="media/logo.png" alt="">SONORA</a>
+    <div class="links">
+      <a href="#como">Como funciona</a><a href="#telas">Telas</a><a href="#compare">Comparar</a><a href="#instalar">Instalar</a>
+      <a href="https://github.com/LucasOl1337/sonora">GitHub ↗</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <p class="k">PipeWire · Omarchy · lista única</p>
+      <h1>O mixer que <b>cabe</b> no mosaico.</h1>
+      <p class="lead">Volume, microfone e destino de cada app numa lista só. Grafite e laranja. Entra no tile como qualquer janela. Não manda no Hyprland.</p>
+      <div class="cta">
+        <a class="btn acc" href="https://github.com/LucasOl1337/sonora">Ver o código</a>
+        <a class="btn ghost" href="#instalar">Instalar</a>
+        <small>Atualizado em 15 de setembro de 2026. Gratuito, open source (MIT). Sem conta, sem nuvem.</small>
+      </div>
+    </div>
+    <div>
+      <div class="video">
+        <video controls playsinline preload="metadata" poster="media/poster.jpg">
+          <source src="media/sonora-promo-web.mp4" type="video/mp4">
+        </video>
+      </div>
+      <p class="vcap">Gravado do app real numa bancada isolada. Narração: Lucas Oliveira, OmniVoice Studio.</p>
+    </div>
+  </header>
+
+  <div class="pillars">
+    <div class="card reveal"><div class="dot"></div><h3>Uma lista só</h3><p>Dispositivos e aplicativos juntos. Sem abas. Cada linha tem mudo, volume, medidor e destino.</p></div>
+    <div class="card reveal"><div class="dot"></div><h3>Cabe na tile</h3><p>Pede 360 px ao compositor. Abaixo de 560 px, Testar, Usar e a rota vão pro menu. A linha continua inteira.</p></div>
+    <div class="card reveal"><div class="dot"></div><h3>Não manda no Hyprland</h3><p>Zero <span class="mono">hyprctl</span>, zero float, zero auto-resize. A sobra da tile vira o gráfico de atividade.</p></div>
+  </div>
+
+  <section id="como">
+    <h2>Como funciona</h2>
+    <p class="sub">Abre, ajusta o que está tocando, fecha. As regras ficam em segundo plano.</p>
+    <div class="flow">
+      <div class="step reveal"><div class="n">01</div><h4>Abre o Sonora</h4><p>Pelo lançador do Omarchy ou <span class="mono">sonora</span> no terminal. Conecta no PipeWire da sessão.</p></div>
+      <div class="step reveal"><div class="n">02</div><h4>Ajusta a linha</h4><p>Mudo, volume, Testar na saída, Ouvir no microfone. Usar define o padrão do sistema.</p></div>
+      <div class="step reveal"><div class="n">03</div><h4>Estrela o app</h4><p>A estrela guarda destino, volume e mudo. Quando o app reabrir, a rota volta.</p></div>
+      <div class="step reveal"><div class="n">04</div><h4>Fecha a janela</h4><p>As regras continuam. Encerrar no cabeçalho, ou <span class="mono">sonora --quit</span>, pra sair de verdade.</p></div>
+    </div>
+  </section>
+
+  <section id="telas">
+    <h2>O mixer de verdade</h2>
+    <p class="sub">As capturas abaixo são do Sonora rodando contra um PipeWire privado de demonstração, em 15/09/2026. Nada de mock.</p>
+
+    <div class="feat">
+      <div class="shot reveal"><img src="media/tela-mixer.png" alt="Janela do Sonora com dispositivos, aplicativos, medidores ao vivo e o gráfico de atividade da saída padrão"></div>
+      <div>
+        <h3>Dispositivos e apps, sem abas</h3>
+        <p>Saída padrão e microfone padrão ficam numa barra no topo. Embaixo, a lista: saídas, entradas, playback e captura. Encerrar e a engrenagem estão no cabeçalho. Não tem barra de status.</p>
+        <ul>
+          <li>Medidores de pico real, de −60 a 0 dBFS, a 30 Hz</li>
+          <li>HDMI sem perfil publicado aparece com Ativar</li>
+          <li>A escuta do Sussurro no headset não polui a lista de apps</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="feat rev">
+      <div>
+        <h3>A sobra da tile vira o gráfico</h3>
+        <p>Quando o mosaico é mais alto que o conteúdo, o cartão de Aplicativos estica. O rodapé vira o monitor de atividade da saída padrão: uns 8 segundos de histórico, as mesmas −60 a 0 dBFS. Em janela compacta ele some, porque a altura mínima é zero.</p>
+        <ul>
+          <li>240 amostras × 33 ms ≈ 7,9 s de histórico (<span class="mono">app.py</span>, classe <span class="mono">Wave</span>)</li>
+          <li>O compositor manda no tamanho. O Sonora não se redimensiona sozinho.</li>
+        </ul>
+      </div>
+      <div class="shot reveal"><img src="media/tela-atividade.png" alt="Mesma janela do Sonora mais alta, com o gráfico de atividade preenchendo a sobra vertical"></div>
+    </div>
+
+    <div class="feat">
+      <div class="shot reveal narrow"><img src="media/tela-compacto.png" alt="Sonora com 500 px de largura: Testar, Usar e destinos foram para o menu de três pontos"></div>
+      <div>
+        <h3>Abaixo de 560 px, a linha encolhe de verdade</h3>
+        <p>Testar, Usar, rota e as legendas da barra de padrões passam pro menu ⋯. Nomes ganham reticências. O volume fica com o espaço que sobra. Medido em 15/09/2026: a linha compacta de dispositivo pede 286 px, a de app 322 px. O cliente pede 360 px ao compositor pra ninguém esmagar a linha.</p>
+      </div>
+    </div>
+
+    <div class="feat rev">
+      <div>
+        <h3>Cenas, estrela, 150%</h3>
+        <p>A engrenagem abre as opções. Uma cena grava padrões, volumes, mudo e destinos. Aplicar só mexe no que está disponível: não abre app, não liga hardware. A estrela é a preferência de um app. Volume até 150% é opt-in.</p>
+        <ul>
+          <li>Preferências em <span class="mono">~/.config/sonora/preferences.json</span>, escrita atômica</li>
+          <li>Fechar a janela não mata as regras</li>
+        </ul>
+      </div>
+      <div class="shot reveal"><img src="media/tela-opcoes.png" alt="Diálogo de opções do Sonora com cenas, preferência salva do Firefox e volume até 150%"></div>
+    </div>
+
+    <div class="nums">
+      <div class="num reveal"><b>360 px</b><span>largura mínima pedida ao compositor (<span class="mono">WINDOW_MIN_WIDTH</span> em <span class="mono">app.py</span>)</span></div>
+      <div class="num reveal"><b>840×365</b><span>tamanho natural medido em 15/09/2026 por <span class="mono">tests/test_layout.py</span> a 840 px de largura</span></div>
+      <div class="num reveal"><b>−60…0</b><span>dBFS nos medidores e no gráfico, 30 Hz, pico real, sem fabricar nível em captura ALSA ociosa</span></div>
+      <div class="num reveal"><b>MIT</b><span>licença: usa, modifica, redistribui. Sem conta e sem telemetria.</span></div>
+    </div>
+  </section>
+
+  <section id="compare">
+    <h2>Sonora, pwvucontrol ou pavucontrol?</h2>
+    <p class="sub">Os três falam com PipeWire. A diferença é o que cabe numa tile do Hyprland, e o que o app se permite fazer com o compositor.</p>
+    <table>
+      <thead><tr><th></th><th>Sonora</th><th>pwvucontrol</th><th>pavucontrol</th></tr></thead>
+      <tbody>
+        <tr><td>Lista</td><td class="y">Uma lista. Sem abas.</td><td class="n">Abas (Playback, Recording, Output, Input, Configuration)</td><td class="n">Abas clássicas de playback, recording, devices, configuration</td></tr>
+        <tr><td>Tile do Hyprland</td><td class="y">Entra no mosaico. Não chama <span class="mono">hyprctl</span>, não flutua, não se redimensiona.</td><td class="n">Applet GTK4 genérico. Sem contrato de mosaico.</td><td class="n">Janela GTK clássica. Sem contrato de mosaico.</td></tr>
+        <tr><td>Modo estreito</td><td class="y">Compacto abaixo de 560 px. Mínimo 360 px.</td><td class="n">Não documenta um modo compacto de uma coluna.</td><td class="n">Feito pra janela larga, com uma linha por canal.</td></tr>
+        <tr><td>Lembrar o app</td><td class="y">Estrela: destino, volume e mudo.</td><td class="n">Não lista persistência por aplicativo.</td><td class="n">Não lista persistência por aplicativo.</td></tr>
+        <tr><td>Cenas</td><td class="y">Salva e aplica o que está disponível.</td><td class="n">Não tem.</td><td class="n">Não tem.</td></tr>
+        <tr><td>Sobra da tile</td><td class="y">Gráfico de atividade da saída padrão.</td><td class="n">Não.</td><td class="n">Não.</td></tr>
+        <tr><td>Testar / Ouvir</td><td class="y">Tom na saída, escuta do microfone na saída padrão.</td><td class="n">Não lista tom de teste nem escuta auxiliar.</td><td class="y">Feedback de volume (desligável no 6.2).</td></tr>
+        <tr><td>Licença</td><td class="y">MIT</td><td class="n">GPL-3.0</td><td class="n">GPL-2.0-or-later</td></tr>
+      </tbody>
+    </table>
+    <p class="foot-note">
+      Sonora: código e testes deste repositório em 15/09/2026 (<span class="mono">app.py</span>, <span class="mono">README.md</span>, <span class="mono">tests/test_layout.py</span>, <span class="mono">LICENSE</span>).
+      pwvucontrol: README com o recorte de features de 04/05/2024 e atalhos de abas no <a href="https://github.com/saivert/pwvucontrol/releases/tag/0.5.0">0.5.0 (17/10/2025)</a>; último release <a href="https://github.com/saivert/pwvucontrol/releases/tag/0.5.3">0.5.3 em 08/07/2026</a>; licença GPL-3.0 no <a href="https://github.com/saivert/pwvucontrol">repositório</a>.
+      pavucontrol: página do projeto em <a href="https://freedesktop.org/software/pulseaudio/pavucontrol/">freedesktop.org</a>, GTK 4 no 6.0 (21/05/2024) e 6.2 (notas de 17/09/2025).
+      Se o concorrente mudou, <a href="https://github.com/LucasOl1337/sonora/issues">abre um issue</a>.
+    </p>
+  </section>
+
+  <section id="instalar">
+    <h2>Instalar</h2>
+    <p class="sub">No Omarchy desta máquina, GTK 4, PyGObject, Cairo, libpulse e uv já estavam lá. O venv usa os pacotes GTK do Python do sistema.</p>
+    <pre><span class="c"># clone e instala o lançador</span>
+git clone https://github.com/LucasOl1337/sonora
+cd sonora
+./install.sh
+sonora</pre>
+    <p class="foot-note" style="margin-top:18px">O instalador coloca <span class="mono">~/.local/bin/sonora</span>, o <span class="mono">.desktop</span> e, no Omarchy, <span class="mono">~/.config/hypr/sonora.lua</span> pra integrar a janela ao mosaico. Não mexe no Sussurro, nos atalhos nem no PipeWire. Depois de uma troca de versão maior do Python, recria o <span class="mono">.venv</span> e roda o instalador de novo.</p>
+  </section>
+
+  <footer>
+    <div>Sonora · feito por <a href="https://github.com/LucasOl1337">LucasOl1337</a> · MIT</div>
+    <div><a href="https://github.com/LucasOl1337/sonora">GitHub</a> · <a href="https://github.com/LucasOl1337/sonora/blob/master/LICENSE">Licença</a> · <a href="https://github.com/LucasOl1337/sonora/issues">Issues</a></div>
+  </footer>
+</div>
+<script>
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.15});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+</script>
+</body>
+</html>
