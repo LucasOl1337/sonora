@@ -8,6 +8,7 @@ import logging
 import math
 import os
 from pathlib import Path
+import re
 import tempfile
 import threading
 import time
@@ -18,6 +19,23 @@ from pulsectl_asyncio import PulseAsync
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "sonora" / "preferences.json"
 KINDS = {"sink": "sink_list", "source": "source_list", "playback": "sink_input_list", "recording": "source_output_list"}
 
+GENERIC_APP_NAMES = {
+    "", "chromium", "chromium-browser", "chrome", "google-chrome", "electron",
+    "playback", "audio", "pulseaudio", "pipewire", "unknown",
+}
+STOP_TOKENS = {
+    "omarchy", "linux", "backend", "daemon", "service", "wrapper", "bin", "bin32",
+    "bin64", "amd64", "x86", "x64", "x86_64", "stable", "nightly", "unstable",
+    "appimage", "flatpak", "snap", "client", "app", "gtk", "qt5", "qt6",
+}
+DESKTOP_DIRS = [
+    Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "applications",
+    Path.home() / ".local/share/flatpak/exports/share/applications",
+    Path("/var/lib/flatpak/exports/share/applications"),
+    Path("/usr/local/share/applications"),
+    Path("/usr/share/applications"),
+]
+
 
 def identity(props):
     if props.get("application.id"):
@@ -27,6 +45,129 @@ def identity(props):
     if props.get("application.name"):
         return "application.name:" + props["application.name"]
     return "media.name:" + props.get("media.name", "unknown")
+
+
+def candidate_name(value):
+    name = Path(str(value)).name.lower()
+    for suffix in (".bin", "-bin", ".sh", ".exe", ".real", "-wrapper", "-bin64", "-bin32", ".x86_64", ".appimage"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    return name
+
+
+def exec_binary(exec_line):
+    for token in exec_line.split():
+        token = token.strip("\"'")
+        if not token or token == "env" or "=" in token or token.startswith(("-", "%")) or token.endswith((".js", ".py", ".rb")):
+            continue
+        name = candidate_name(token)
+        if name:
+            return name
+    return None
+
+
+def desktop_entry(path):
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return None
+    fields, in_main = {}, False
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            if in_main:
+                break
+            in_main = line.strip("[]") == "Desktop Entry"
+            continue
+        if in_main and "=" in line and not line.startswith("#"):
+            key, _, value = line.partition("=")
+            fields.setdefault(key.strip(), value.strip())
+    name = fields.get("Name")
+    if not name or fields.get("Hidden") == "true":
+        return None
+    keys = {path.stem.lower()}
+    if fields.get("StartupWMClass"):
+        keys.add(fields["StartupWMClass"].lower())
+    return {"name": name, "icon": fields.get("Icon"), "keys": keys, "exec": exec_binary(fields.get("Exec", ""))}
+
+
+def desktop_index():
+    # Atalhos de app tipo "chrome-<id>-Default" dividem o Exec do navegador:
+    # stems/WMClass têm prioridade e o basename do Exec fica num nível abaixo.
+    stems, execs = {}, {}
+    for folder in DESKTOP_DIRS:
+        try:
+            files = sorted(folder.glob("*.desktop"))
+        except OSError:
+            continue
+        for path in files:
+            entry = desktop_entry(path)
+            if entry is None:
+                continue
+            for key in entry["keys"]:
+                stems.setdefault(key, entry)
+            if entry["exec"]:
+                execs.setdefault(entry["exec"], entry)
+    return stems, execs
+
+
+def desktop_match(index, candidate):
+    if not candidate:
+        return None
+    stems, execs = index
+    norm = candidate_name(candidate)
+    for mapping in (stems, execs):
+        if norm in mapping:
+            return mapping[norm]
+    tokens = [t for t in re.split(r"[^a-z0-9]+", norm) if len(t) >= 4 and t not in STOP_TOKENS]
+    for token in sorted(tokens, key=lambda t: (-len(t), t)):
+        if token in stems:
+            return stems[token]
+    for token in sorted(tokens, key=lambda t: (-len(t), t)):
+        if token in execs:
+            return execs[token]
+    return None
+
+
+def process_binary(pid):
+    if not str(pid or "").isdigit():
+        return None
+    proc = Path("/proc") / str(pid)
+    try:
+        return (proc / "exe").resolve().name
+    except OSError:
+        try:
+            return (proc / "comm").read_text().strip() or None
+        except OSError:
+            return None
+
+
+def prettify(binary):
+    tokens = [t for t in re.split(r"[^A-Za-z0-9]+", candidate_name(binary)) if t and t.lower() not in STOP_TOKENS]
+    return " ".join(t.capitalize() for t in tokens)
+
+
+def merge_streams(items, device_names):
+    grouped = {}
+    for item in items:
+        grouped.setdefault((item["identity"], item["target"]), []).append(item)
+    merged = []
+    for members in grouped.values():
+        first = members[0]
+        first["key"] = f'{first["kind"]}:{first["identity"]}@{device_names.get(first["target"], "?")}'
+        if len(members) == 1:
+            merged.append(first)
+            continue
+        indices = sorted(m["index"] for m in members)
+        subtitles = list(dict.fromkeys(m["subtitle"] for m in members if m["subtitle"]))
+        merged.append({**first, "index": indices[0], "indices": indices,
+                       "volume": max(m["volume"] for m in members),
+                       "mute": all(m["mute"] for m in members),
+                       "active": any(m["active"] for m in members),
+                       "following": all(m["following"] for m in members),
+                       "streams": len(members),
+                       "subtitle": (", ".join(subtitles[:3]) + " · " if subtitles else "") + f"{len(members)} canais"})
+    return merged
 
 
 def client_properties(props):
@@ -178,6 +319,7 @@ class AudioEngine:
         self.transient_routes = {}
         self.microphone_test_module = None
         self.microphone_test_source = None
+        self.desktop_cache = (0.0, ({}, {}))
         self.visible = True
         self.running = True
         self.loop = None
@@ -310,6 +452,38 @@ class AudioEngine:
         finally:
             self.levels.pop(key, None)
 
+    def desktops(self):
+        now = time.monotonic()
+        if now - self.desktop_cache[0] > 10:
+            self.desktop_cache = (now, desktop_index())
+        return self.desktop_cache[1]
+
+    def app_title(self, props, fallback):
+        name = (props.get("application.name") or "").strip()
+        icon = props.get("application.icon_name")
+        generic = name.lower() in GENERIC_APP_NAMES or bool(re.match(r"^(chromium|chrome|electron)\b", name.lower()))
+        binary = props.get("application.process.binary") or process_binary(props.get("application.process.id"))
+        index = self.desktops()
+        if name and not generic:
+            for candidate in (binary, props.get("application.id"), name):
+                match = desktop_match(index, candidate)
+                if match and match["icon"]:
+                    icon = icon or match["icon"]
+                    break
+            return name, icon or "applications-multimedia-symbolic"
+        for candidate in (binary, props.get("application.id"), name):
+            match = desktop_match(index, candidate)
+            if match:
+                return match["name"], match["icon"] or icon or "applications-multimedia-symbolic"
+        if binary:
+            pretty = prettify(binary)
+            if pretty:
+                return pretty, icon or "applications-multimedia-symbolic"
+        return (name or props.get("media.name") or fallback or "Aplicativo"), icon or "applications-multimedia-symbolic"
+
+    def members(self, item):
+        return [self.objects[f'{item["kind"]}:{i}'] for i in item.get("indices", [item["index"]])]
+
     async def refresh(self):
         server = await self.pulse.server_info()
         groups = {}
@@ -332,26 +506,34 @@ class AudioEngine:
                 self.objects[key] = obj
                 device = kind in ("sink", "source")
                 default = server.default_sink_name if kind == "sink" else server.default_source_name
+                ident = identity(props)
+                route_key = f"{kind}:{ident}"
+                title, icon = (obj.description, props.get("application.icon_name", "audio-card-symbolic")) if device else self.app_title(props, obj.name)
                 entry = {
                     "key": key, "kind": kind, "index": obj.index,
-                    "name": obj.name, "title": obj.description if device else props.get("application.name", obj.name),
-                    "subtitle": obj.name if device else props.get("media.name", obj.name),
+                    "name": obj.name, "title": title,
+                    "subtitle": obj.name if device else (props.get("media.name") or obj.name),
                     "volume": round(obj.volume.value_flat * 100), "mute": bool(obj.mute),
                     "channels": len(obj.volume.values),
                     "card": getattr(obj, "card", None),
                     "alsa_card": props.get("api.alsa.card"),
-                    "identity": identity(props), "default": device and obj.name == default,
-                    "icon": props.get("application.icon_name", "audio-card-symbolic" if device else "applications-multimedia-symbolic"),
+                    "identity": ident, "route_key": route_key, "default": device and obj.name == default,
+                    "icon": icon,
                     "active": getattr(obj, "state", None) == "running" if device else not bool(obj.corked),
                     "target": getattr(obj, "sink" if kind == "playback" else "source", None) if not device else None,
-                    "following": key in self.transient_routes and self.transient_routes[key] is None,
+                    "following": route_key in self.transient_routes and self.transient_routes[route_key] is None,
                     "ports": [{"name": p.name, "title": p.description, "available": str(p.available)} for p in getattr(obj, "port_list", [])],
                     "port": getattr(getattr(obj, "port_active", None), "name", None),
                     "nick": props.get("node.nick") or props.get("alsa.name"),
                 }
+                if not device:
+                    entry["indices"] = [obj.index]
                 if hasattr(obj, "monitor_source_name"):
                     entry["monitor"] = obj.monitor_source_name
                 groups[kind].append(entry)
+        device_names = {d["index"]: d["name"] for d in groups["sink"] + groups["source"]}
+        for stream_kind in ("playback", "recording"):
+            groups[stream_kind] = merge_streams(groups[stream_kind], device_names)
         for device_kind, stream_kind in (("sink", "playback"), ("source", "recording")):
             for item in groups[device_kind]:
                 item["active"] = any(s["target"] == item["index"] and s["active"] for s in groups[stream_kind])
@@ -388,7 +570,8 @@ class AudioEngine:
             sinks = {item["index"]: item for item in state["sink"]}
             for item in state["playback"]:
                 if item["target"] in sinks:
-                    wanted[item["key"]] = (sinks[item["target"]]["monitor"], item["index"])
+                    for index in item["indices"]:
+                        wanted[f'playback:{index}'] = (sinks[item["target"]]["monitor"], index)
         for key in list(self.meters):
             spec, task = self.meters[key]
             if wanted.get(key) != spec or task.done():
@@ -401,28 +584,34 @@ class AudioEngine:
 
     async def apply_rules(self, state):
         current = set()
+        members_now = set()
         for kind, target_kind in (("playback", "sink"), ("recording", "source")):
             devices = {x["name"]: x for x in state[target_kind]}
             for item in state[kind]:
-                key = item["key"]
-                current.add(key)
+                route_key = item["route_key"]
+                current.add(route_key)
+                members_now.update(f"{kind}:{i}" for i in item["indices"])
                 rule = self.prefs.data["rules"].get(kind + ":" + item["identity"])
-                if not isinstance(rule, dict) and key not in self.transient_routes:
+                if not isinstance(rule, dict) and route_key not in self.transient_routes:
                     continue
                 rule = rule or {}
-                target_name = self.transient_routes.get(key, rule.get("target")) or state["defaults"][target_kind]
+                target_name = self.transient_routes.get(route_key, rule.get("target")) or state["defaults"][target_kind]
                 target = devices.get(target_name)
                 if target and item["target"] != target["index"]:
                     await self.move(item, target["index"])
-                if rule and key not in self.seen:
-                    await self.pulse.volume_set_all_chans(self.objects[key], max(0, min(1.5, rule.get("volume", 100) / 100)))
-                    await self.pulse.mute(self.objects[key], bool(rule.get("mute", False)))
-        self.seen = current
+                if rule:
+                    for index, obj in zip(item["indices"], self.members(item)):
+                        if f"{kind}:{index}" in self.seen:
+                            continue
+                        await self.pulse.volume_set_all_chans(obj, max(0, min(1.5, rule.get("volume", 100) / 100)))
+                        await self.pulse.mute(obj, bool(rule.get("mute", False)))
+        self.seen = members_now
         self.transient_routes = {k: v for k, v in self.transient_routes.items() if k in current}
 
     async def move(self, item, target):
         method = self.pulse.sink_input_move if item["kind"] == "playback" else self.pulse.source_output_move
-        await method(item["index"], target)
+        for index in item.get("indices", [item["index"]]):
+            await method(index, target)
 
     def item(self, kind, index):
         return next(x for x in self.state[kind] if x["index"] == index)
@@ -544,9 +733,9 @@ class AudioEngine:
                 for item in self.state[saved["kind"]]:
                     match = item["name"] == saved["name"] if saved["kind"] in ("sink", "source") else item["identity"] == saved["identity"]
                     if match:
-                        obj = self.objects[item["key"]]
-                        await self.pulse.volume_set_all_chans(obj, saved["volume"] / 100)
-                        await self.pulse.mute(obj, saved["mute"])
+                        for obj in self.members(item):
+                            await self.pulse.volume_set_all_chans(obj, saved["volume"] / 100)
+                            await self.pulse.mute(obj, saved["mute"])
                         if "target" in saved:
                             targets = self.state["sink" if saved["kind"] == "playback" else "source"]
                             for target in targets:
@@ -559,22 +748,23 @@ class AudioEngine:
             return
         kind, index = args[:2]
         item = self.item(kind, index)
-        obj = self.objects[item["key"]]
         if action == "volume":
             value = max(0, min(150, args[2]))
-            await self.pulse.volume_set_all_chans(obj, value / 100)
+            for obj in self.members(item):
+                await self.pulse.volume_set_all_chans(obj, value / 100)
             self.remember_change(item, volume=value)
         elif action == "mute":
-            await self.pulse.mute(obj, args[2])
+            for obj in self.members(item):
+                await self.pulse.mute(obj, args[2])
             self.remember_change(item, mute=args[2])
         elif action == "default":
-            await self.pulse.default_set(obj)
+            await self.pulse.default_set(self.objects[item["key"]])
         elif action == "route":
             target_kind = "sink" if kind == "playback" else "source"
             name = args[2] or self.state["defaults"][target_kind]
             target = next(t for t in self.state[target_kind] if t["name"] == name)
             await self.move(item, target["index"])
-            self.transient_routes[item["key"]] = args[2]
+            self.transient_routes[item["route_key"]] = args[2]
             self.remember_change(item, target=args[2])
         elif action == "remember":
             key = kind + ":" + item["identity"]
@@ -583,14 +773,15 @@ class AudioEngine:
                 targets = self.state["sink" if kind == "playback" else "source"]
                 target_index = obj.sink if kind == "playback" else obj.source
                 target = next((x["name"] for x in targets if x["index"] == target_index), None)
-                target = self.transient_routes.get(item["key"], target)
-                self.prefs.data["rules"][key] = {"title": item["title"], "kind": kind, "target": target, "volume": round(obj.volume.value_flat * 100), "mute": bool(obj.mute)}
+                target = self.transient_routes.get(item["route_key"], target)
+                self.prefs.data["rules"][key] = {"title": item["title"], "kind": kind, "target": target, "volume": item["volume"], "mute": item["mute"]}
             else:
                 self.prefs.data["rules"].pop(key, None)
             self.prefs.save()
         elif action == "port":
-            await self.pulse.port_set(obj, args[2])
+            await self.pulse.port_set(self.objects[item["key"]], args[2])
         elif action == "balance":
+            obj = self.objects[item["key"]]
             if len(obj.volume.values) == 2:
                 base = max(obj.volume.values)
                 balance = args[2]

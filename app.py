@@ -109,7 +109,7 @@ class Choice(Gtk.DropDown):
 class Meter(Gtk.DrawingArea):
     def __init__(self, engine):
         super().__init__()
-        self.engine, self.key = engine, None
+        self.engine, self.keys = engine, []
         self.display = 0.0
         self.muted = False
         self.set_hexpand(True)
@@ -119,8 +119,13 @@ class Meter(Gtk.DrawingArea):
         self.set_tooltip_text("Nível real do áudio, de −60 a 0 dBFS")
 
     def draw(self, _, ctx, width, height):
-        sample, timestamp = self.engine.levels.get(self.key, (0, 0))
-        value = max(0, (20 * math.log10(max(sample, 0.001)) + 60) / 60) if time.monotonic() - timestamp < 0.3 and not self.muted else 0
+        now = time.monotonic()
+        sample = 0.0
+        for key in self.keys:
+            level, timestamp = self.engine.levels.get(key, (0, 0))
+            if now - timestamp < 0.3:
+                sample = max(sample, level)
+        value = max(0, (20 * math.log10(max(sample, 0.001)) + 60) / 60) if not self.muted else 0
         self.display = max(value, self.display * 0.83)
         ctx.set_source_rgb(0.19, 0.20, 0.23)
         ctx.rectangle(0, 0, width, height)
@@ -196,6 +201,14 @@ class Wave(Gtk.DrawingArea):
             ctx.show_text("atividade da saída padrão")
 
 
+def meter_keys(item):
+    if item["kind"] == "playback":
+        return [f"playback:{i}" for i in item.get("indices", [item["index"]])]
+    if item["kind"] == "recording":
+        return [f'source:{item["target"]}']
+    return [item["key"]]
+
+
 def short_device(name):
     if "High Definition Audio Controller" in name and "(HDMI" in name:
         return name.rsplit("(", 1)[1].rstrip(")") + " · " + name.split(" High Definition", 1)[0]
@@ -227,7 +240,13 @@ class Channel(Gtk.Box):
         self.volume_timer = None
         self.device = item["kind"] in ("sink", "source")
         is_input = item["kind"] in ("source", "recording")
-        self.icon = Gtk.Image.new_from_icon_name("audio-input-microphone-symbolic" if is_input else ("audio-speakers-symbolic" if self.device else item["icon"]))
+        if self.device:
+            icon_name = "audio-input-microphone-symbolic" if is_input else "audio-speakers-symbolic"
+        else:
+            icon_name = item["icon"]
+            if not Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).has_icon(icon_name):
+                icon_name = "applications-multimedia-symbolic"
+        self.icon = Gtk.Image.new_from_icon_name(icon_name)
         self.icon.set_pixel_size(16)
         self.icon.set_size_request(18, -1)
         self.icon.set_tooltip_text("Entrada de áudio" if is_input else "Saída de áudio")
@@ -251,7 +270,7 @@ class Channel(Gtk.Box):
         self.scale.connect("value-changed", self.on_volume)
         levels.append(self.scale)
         self.meter = Meter(window.engine)
-        self.meter.key = item["key"]
+        self.meter.keys = meter_keys(item)
         levels.append(self.meter)
         self.append(levels)
         self.readout = label("", "mono small")
@@ -433,9 +452,10 @@ class Channel(Gtk.Box):
                 monitoring = state.get("microphone_test") == item["name"]
                 self.test_btn.set_active(monitoring)
                 self.test_btn.set_label("Parar" if monitoring else "Ouvir")
-        if item["kind"] == "recording":
-            self.meter.key = f'source:{item["target"]}'
-            self.meter.set_tooltip_text("Nível do microfone usado por este app")
+        if not self.device:
+            self.meter.keys = meter_keys(item)
+            if item["kind"] == "recording":
+                self.meter.set_tooltip_text("Nível do microfone usado por este app")
         if self.route:
             devices = state["sink" if item["kind"] == "playback" else "source"]
             rule = state["rules"].get(item["kind"] + ":" + item["identity"])

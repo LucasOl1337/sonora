@@ -54,13 +54,13 @@ async def main():
                 weak = next(x for x in engine.state["playback"] if x["title"] == "Canal teste baixo")
                 capture = next(x for x in engine.state["recording"] if x["title"] == "Captura teste Sonora")
                 for item in (strong, weak):
-                    await pulse.mute(engine.objects[item["key"]], False)
-                    await pulse.volume_set_all_chans(engine.objects[item["key"]], 1)
+                    await pulse.mute(engine.members(item)[0], False)
+                    await pulse.volume_set_all_chans(engine.members(item)[0], 1)
                     await pulse.sink_input_move(item["index"], a["index"])
                 await engine.refresh()
                 await asyncio.sleep(1)
-                strong_peak = engine.levels[strong["key"]][0]
-                weak_peak = engine.levels[weak["key"]][0]
+                strong_peak = engine.levels[f'playback:{strong["indices"][0]}'][0]
+                weak_peak = engine.levels[f'playback:{weak["indices"][0]}'][0]
                 assert strong_peak > weak_peak * 5, (strong_peak, weak_peak)
                 print(f"PASS independent app peaks: {strong_peak:.4f} / {weak_peak:.4f}")
                 await engine.execute("volume", "playback", strong["index"], 37)

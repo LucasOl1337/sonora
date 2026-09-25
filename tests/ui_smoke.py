@@ -40,7 +40,7 @@ def start():
     adjustment = app.window.scroll.get_vadjustment()
     assert adjustment.get_upper() <= adjustment.get_page_size() + 1, (adjustment.get_upper(), adjustment.get_page_size())
     assert all(w.get_height() <= 48 for w in app.window.channels.values())
-    assert app.window.get_height() <= 680, app.window.get_height()
+    assert app.window.get_height() <= app.window.scroll.get_max_content_height() + 60, app.window.get_height()
     device = output_rows[0]
     wide_min = device.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
     assert wide_min <= 640, wide_min
