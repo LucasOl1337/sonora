@@ -38,13 +38,15 @@ DESKTOP_DIRS = [
 
 
 def identity(props):
+    # The DuoOmarchy second seat runs the same apps; never route both seats as one.
+    seat = "@" + props["duoomarchy.session"] if props.get("duoomarchy.session") else ""
     if props.get("application.id"):
-        return "application.id:" + props["application.id"]
+        return "application.id:" + props["application.id"] + seat
     if props.get("application.process.binary"):
-        return "application:" + props["application.process.binary"] + ":" + props.get("application.name", "")
+        return "application:" + props["application.process.binary"] + ":" + props.get("application.name", "") + seat
     if props.get("application.name"):
-        return "application.name:" + props["application.name"]
-    return "media.name:" + props.get("media.name", "unknown")
+        return "application.name:" + props["application.name"] + seat
+    return "media.name:" + props.get("media.name", "unknown") + seat
 
 
 def candidate_name(value):
@@ -509,6 +511,8 @@ class AudioEngine:
                 ident = identity(props)
                 route_key = f"{kind}:{ident}"
                 title, icon = (obj.description, props.get("application.icon_name", "audio-card-symbolic")) if device else self.app_title(props, obj.name)
+                if not device and props.get("duoomarchy.session"):
+                    title += " (" + props["duoomarchy.session"] + ")"
                 entry = {
                     "key": key, "kind": kind, "index": obj.index,
                     "name": obj.name, "title": title,
